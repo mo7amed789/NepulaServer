@@ -1,0 +1,154 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+
+    <SelfContained>false</SelfContained>
+    <UseAppHost>true</UseAppHost>
+
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishReadyToRun>false</PublishReadyToRun>
+
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <DisableFastUpToDateCheck>false</DisableFastUpToDateCheck>
+  </PropertyGroup>
+
+  <!-- Release -->
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+
+    <SelfContained>true</SelfContained>
+
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishReadyToRun>true</PublishReadyToRun>
+
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+
+   </PropertyGroup>
+
+  <!-- ========================= -->
+  <!-- Ignore Python Runtime     -->
+  <!-- ========================= -->
+
+  <ItemGroup>
+
+    <!-- Don't compile anything under Python -->
+    <Compile Remove="Python\**" />
+    <EmbeddedResource Remove="Python\**" />
+    <Content Remove="Python\**" />
+    <None Remove="Python\**" />
+
+  </ItemGroup>
+
+  <!-- ========================= -->
+  <!-- Publish Python Runtime    -->
+  <!-- ========================= -->
+
+  <ItemGroup>
+
+    <!-- Python اتشال فوق بـ Remove فالـ Include هنا صحيح ومفيش تكرار -->
+    <None Include="Python\**\*"
+          Exclude="Python\**\__pycache__\**;Python\**\*.pyc;Python\**\*.pyo;Python\**\*.dist-info\**;Python\**\tests\**;Python\**\test\**;Python\Lib\site-packages\bin\**;Python\Lib\site-packages\share\**">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+
+    <!-- FIX: Update بدل Include — الملفات دي داخلة أصلاً في الـ Default None Glob
+         و Include كان بيعمل Duplicate Items وبيسبب خطأ NETSDK1152 عند الـ Publish -->
+    <None Update="Engine\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </None>
+
+    <None Update="Assets\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </None>
+
+    <None Update="Tools\VC_redist.x64.exe">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </None>
+
+  </ItemGroup>
+
+  <!-- ========================= -->
+  <!-- Files                     -->
+  <!-- ========================= -->
+
+  <ItemGroup>
+
+    <None Update="ffmpeg.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </None>
+
+    <None Update="ffprobe.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </None>
+
+    <None Update="Tools\ngrok.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+
+    <!-- FIX: في Web SDK ملفات الـ json بتتسجل كـ Content مش None -->
+    <Content Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </Content>
+
+    <!-- FIX: القيم كانت على سطور متعددة بمسافات زائدة — MSBuild كان هيرفضها
+         "PreserveNewest" لازم تكون قيمة نظيفة بدون Whitespace -->
+    <Content Update="appsettings.Development.json"
+             Condition="'$(Configuration)'=='Release'">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Never</CopyToPublishDirectory>
+    </Content>
+
+    <None Update="private_key.pem">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Never</CopyToPublishDirectory>
+    </None>
+
+  </ItemGroup>
+
+  <!-- ========================= -->
+  <!-- Packages                  -->
+  <!-- ========================= -->
+
+  <ItemGroup>
+
+    <PackageReference Include="Microsoft.Data.Sqlite.Core"
+                      Version="10.0.9" />
+
+    <!-- FIX: كانت نسخة Preview قديمة (10.0.0-preview.4) — اتحولت للنسخة المستقرة -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices"
+                      Version="10.0.0" />
+
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
+                      Version="3.0.3" />
+
+    <PackageReference Include="QRCoder"
+                      Version="1.8.0" />
+
+    <PackageReference Include="System.Security.Cryptography.ProtectedData"
+                      Version="10.0.0" />
+
+    <!-- FIX: كانت 9.0.0 — اتوحدت مع net10.0 -->
+    <PackageReference Include="System.Management"
+                      Version="10.0.0" />
+
+  </ItemGroup>
+
+</Project>

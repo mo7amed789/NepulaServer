@@ -1,0 +1,119 @@
+############################
+# Visual Studio
+############################
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+############################
+# Build
+############################
+bin/
+obj/
+Debug/
+Release/
+
+############################
+# Publish
+############################
+publish/
+artifacts/
+
+############################
+# Rider / VS Code
+############################
+.idea/
+.vscode/
+
+############################
+# Logs
+############################
+*.log
+
+############################
+# Test Results
+############################
+TestResults/
+coverage/
+
+############################
+# NuGet
+############################
+*.nupkg
+packages/
+
+############################
+# Windows
+############################
+Thumbs.db
+Desktop.ini
+
+############################
+# Environment
+############################
+.env
+.env.*
+appsettings.Development.json
+
+############################
+# Certificates / Keys
+############################
+*.pfx
+*.p12
+*.pem
+*.key
+Keys/
+
+############################
+# SQLite
+############################
+*.db
+*.db-shm
+*.db-wal
+
+############################
+# Python
+############################
+Python/
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+############################
+# External Tools / Binaries
+############################
+Tools/
+ffmpeg.exe
+ffprobe.exe
+yt-dlp.exe
+ngrok.exe
+
+############################
+# Installer Output
+############################
+Installer/
+Setup/
+Output/
+
+############################
+# Runtime Data
+############################
+downloads/
+uploads/
+temp/
+cache/
+logs/
+licenses/
+
+############################
+# Temporary files
+############################
+*.tmp
+*.cache

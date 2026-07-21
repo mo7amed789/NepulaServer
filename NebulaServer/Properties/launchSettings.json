@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "NebulaServer": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "launchUrl": "swagger",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:58648;http://localhost:58649"
+    }
+  }
+}
