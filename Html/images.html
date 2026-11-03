@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Downloader — Tanzeel Engine</title>
+    <link rel="stylesheet" href="/static/index.min.css">
+    <script>
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.setAttribute('data-theme', savedTheme);
+    </script>
+    <style>
+        /* ── Image grid ─────────────────────────────── */
+        .img-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }
+        .img-card {
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            background: var(--bg-surface-hover);
+            display: flex;
+            flex-direction: column;
+            transition: border-color 0.2s, transform 0.15s;
+            animation: fadeInUp 0.35s cubic-bezier(0.16,1,0.3,1) both;
+        }
+        .img-card:hover { border-color: var(--border-hover); transform: none; }
+        .img-card img {
+            width: 100%;
+            aspect-ratio: 1;
+            object-fit: cover;
+            background: var(--bg-elevated);
+            display: block;
+        }
+        .img-card-footer {
+            padding: 10px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .img-card-name {
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 1;
+        }
+        .img-card-dl {
+            flex-shrink: 0;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            padding: 4px;
+            border-radius: var(--radius-sm);
+            transition: color 0.15s, background 0.15s;
+        }
+        .img-card-dl:hover { color: var(--primary-hover); background: var(--bg-elevated); }
+
+        /* ── Preview modal ──────────────────────────── */
+        .img-preview-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(6px);
+        }
+        .img-preview-overlay.open { display: flex; }
+        .img-preview-box {
+            position: relative;
+            max-width: 90vw;
+            max-height: 90vh;
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            box-shadow: 0 24px 80px rgba(0,0,0,0.7);
+            animation: fadeInUp 0.25s cubic-bezier(0.16,1,0.3,1);
+        }
+        .img-preview-box img {
+            display: block;
+            max-width: 90vw;
+            max-height: 85vh;
+            object-fit: contain;
+        }
+        .img-preview-close {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.6);
+            border: none;
+            color: #fff;
+            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            line-height: 1;
+            transition: background 0.15s;
+        }
+        .img-preview-close:hover { background: rgba(0,0,0,0.85); }
+
+        /* ── URL tag chips ──────────────────────────── */
+        .url-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .url-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: 100px;
+            padding: 4px 10px;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
+            max-width: 280px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .url-tag button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--text-muted);
+            padding: 0;
+            display: flex;
+            align-items: center;
+            transition: color 0.15s;
+            flex-shrink: 0;
+        }
+        .url-tag button:hover { color: var(--danger); }
+
+        /* ── Progress bar ───────────────────────────── */
+        .dl-progress {
+            height: 6px;
+            background: var(--bg-elevated);
+            border-radius: 100px;
+            overflow: hidden;
+            margin-top: 10px;
+            display: none;
+        }
+        .dl-progress-bar {
+            height: 100%;
+            width: 0%;
+            background: var(--primary);
+            border-radius: 100px;
+            transition: width 0.3s ease;
+        }
+        .dl-progress.active { display: block; }
+
+        /* ── Animations ─────────────────────────────── */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(14px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes spinnerAnim {
+            to { transform: rotate(360deg); }
+        }
+        .spinner {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            border: 2px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spinnerAnim 0.7s linear infinite;
+            flex-shrink: 0;
+        }
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding: 40px;
+            color: var(--text-muted);
+            text-align: center;
+        }
+        .empty-state svg { opacity: 0.35; }
+        .empty-state-title { font-weight: 600; font-size: 0.95rem; color: var(--text-secondary); }
+        .empty-state-desc  { font-size: 0.82rem; }
+    </style>
+</head>
+<body>
+    <div class="container image-shell">
+        <!-- Header -->
+        <header class="card app-header image-header">
+            <div class="header-main">
+                <div class="brand-lockup">
+                    <div class="brand-mark" aria-hidden="true">
+                        <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                    </div>
+                    <div>
+                        <div class="brand-eyebrow">TANZEEL ENGINE</div>
+                        <h1>Image workspace</h1>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button class="btn btn-icon" onclick="toggleTheme()" title="Toggle dark or light mode" aria-label="Toggle dark or light mode">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                    </button>
+                    <a href="/app" class="btn btn-secondary header-link">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                        Dashboard
+                    </a>
+                </div>
+            </div>
+            <div class="hero-copy image-hero-copy">
+                <div>
+                    <span class="hero-kicker">CAROUSELS · PHOTO POSTS · DIRECT LINKS</span>
+                    <p>Collect images from social posts and direct URLs, preview them, then save exactly what you need.</p>
+                </div>
+            </div>
+        </header>
+
+        <!-- URL Input -->
+        <main class="card image-workbench">
+            <div class="card-header">
+                <div>
+                    <span class="section-kicker">ADD SOURCES</span>
+                    <h2 class="card-title">Build your download queue</h2>
+                    <p class="section-description">Direct image links and supported social posts are detected automatically.</p>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="label" for="imageUrl">Image or Post URL</label>
+                <div class="url-entry">
+                    <span class="url-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07.07l2-2a5 5 0 0 0-7.07-7.07l-1.15 1.15"/><path d="M14 11a5 5 0 0 0-7.07-.07l-2 2A5 5 0 0 0 12 20l1.15-1.15"/></svg>
+                    </span>
+                    <input type="url" id="imageUrl" class="input" placeholder="Paste an image or social post URL" autocomplete="off"
+                        onkeydown="if(event.key==='Enter')addUrl()">
+                    <button class="btn btn-secondary" onclick="addUrl()" id="btnAdd">Add to queue</button>
+                </div>
+            </div>
+
+            <!-- URL chip list -->
+            <div id="urlTagsContainer" style="display:none;">
+                <div class="label" style="margin-bottom:6px;">Queued URLs</div>
+                <div class="url-tags" id="urlTags"></div>
+            </div>
+
+            <!-- Progress -->
+            <div class="dl-progress" id="dlProgress">
+                <div class="dl-progress-bar" id="dlProgressBar"></div>
+            </div>
+
+            <div class="image-actions">
+                <button class="btn btn-primary" id="btnDownloadAll" onclick="downloadAll()" disabled>
+                    Download all
+                </button>
+                <button class="btn btn-secondary" id="btnClearQueue" onclick="clearQueue()" disabled>
+                    Clear queue
+                </button>
+            </div>
+        </main>
+
+        <!-- Gallery -->
+        <section class="card image-gallery-card">
+            <div class="card-header history-header">
+                <div>
+                    <span class="section-kicker">YOUR GALLERY</span>
+                    <h2 class="card-title">Downloaded images</h2>
+                </div>
+                <button class="btn btn-danger btn-compact" onclick="clearGallery()">Clear all</button>
+            </div>
+            <div id="galleryContainer">
+                <div class="empty-state" id="galleryEmpty">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+                    </svg>
+                    <div class="empty-state-title">No images yet</div>
+                    <div class="empty-state-desc">Add URLs above and click Download All</div>
+                </div>
+                <div class="img-grid" id="imgGrid"></div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Preview overlay -->
+    <div class="img-preview-overlay" id="previewOverlay" onclick="closePreview(event)">
+        <div class="img-preview-box">
+            <img id="previewImg" src="" alt="Preview">
+            <button class="img-preview-close" onclick="closePreviewBtn()">&times;</button>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast-container"></div>
+
+    <script>
+        // ─── State ─────────────────────────────────────────────────────
+        let pairingKey = '';
+        let urlQueue   = [];      // [{id, url}]
+        let gallery    = [];      // [{name, blobUrl, originalUrl}]
+        let downloading = false;
+
+        // ─── Init ──────────────────────────────────────────────────────
+        (async function init() {
+            try {
+                const r = await fetch('/api/pairing');
+                const d = await r.json();
+                pairingKey = d.pairingKey || '';
+            } catch(_) {}
+        })();
+
+        function toggleTheme() {
+            const cur = document.documentElement.getAttribute('data-theme');
+            const nxt = cur === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', nxt);
+            localStorage.setItem('theme', nxt);
+        }
+
+        // ─── Queue management ──────────────────────────────────────────
+        function addUrl() {
+            const input = document.getElementById('imageUrl');
+            const url   = input.value.trim();
+            if (!url) { showToast('Error', 'Please enter a URL.', 'error'); return; }
+            try {
+                const parsed = new URL(url);
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('Unsupported protocol');
+            } catch(_) { showToast('Error', 'Enter a valid HTTP or HTTPS URL.', 'error'); return; }
+            if (urlQueue.find(u => u.url === url)) { showToast('Info', 'URL already in queue.', 'info'); return; }
+
+            const id = Math.random().toString(36).slice(2);
+            urlQueue.push({ id, url });
+            input.value = '';
+            renderQueue();
+            showToast('Added', 'URL added to queue.', 'success');
+        }
+
+        function removeUrl(id) {
+            urlQueue = urlQueue.filter(u => u.id !== id);
+            renderQueue();
+        }
+
+        function clearQueue() {
+            urlQueue = [];
+            renderQueue();
+        }
+
+        function renderQueue() {
+            const container = document.getElementById('urlTagsContainer');
+            const tags      = document.getElementById('urlTags');
+            const btnDl     = document.getElementById('btnDownloadAll');
+            const btnCl     = document.getElementById('btnClearQueue');
+
+            if (urlQueue.length === 0) {
+                container.style.display = 'none';
+                btnDl.disabled = true;
+                btnCl.disabled = true;
+                return;
+            }
+
+            container.style.display = '';
+            btnDl.disabled = downloading;
+            btnCl.disabled = downloading;
+
+            tags.replaceChildren();
+            urlQueue.forEach(({id, url}) => {
+                const label = url.length > 50 ? url.slice(0, 47) + '…' : url;
+                const tag = document.createElement('div');
+                tag.className = 'url-tag';
+                tag.setAttribute('title', url);
+
+                const text = document.createElement('span');
+                text.textContent = label;
+
+                const removeButton = document.createElement('button');
+                removeButton.setAttribute('type', 'button');
+                removeButton.setAttribute('title', 'Remove URL');
+                removeButton.setAttribute('aria-label', 'Remove URL');
+                removeButton.textContent = '×';
+                removeButton.addEventListener('click', () => removeUrl(id));
+
+                tag.append(text, removeButton);
+                tags.appendChild(tag);
+            });
+        }
+
+        // ─── Download pipeline ─────────────────────────────────────────
+        async function downloadAll() {
+            if ('Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission().catch(() => {});
+            }
+
+            if (urlQueue.length === 0 || downloading) return;
+            downloading = true;
+            renderQueue();
+
+            const progress    = document.getElementById('dlProgress');
+            const progressBar = document.getElementById('dlProgressBar');
+            progress.classList.add('active');
+
+            const total = urlQueue.length;
+            let processed = 0;
+            let done = 0;
+
+            for (const {url} of [...urlQueue]) {
+                progressBar.style.width = Math.round(processed / total * 100) + '%';
+                try {
+                    done += await downloadImagesFromUrl(url);
+                } catch(e) {
+                    showToast('Failed', e.message || `Could not download images from: ${url.slice(0,40)}…`, 'error');
+                }
+                processed++;
+                progressBar.style.width = Math.round(processed / total * 100) + '%';
+            }
+
+            progressBar.style.width = '100%';
+            setTimeout(() => {
+                progress.classList.remove('active');
+                progressBar.style.width = '0%';
+            }, 600);
+
+            urlQueue = [];
+            renderQueue();
+            renderGallery();
+            downloading = false;
+            if (done > 0) {
+                playNotificationChime();
+                triggerDesktopNotification('Download Finished! 📷', `${done} image${done > 1 ? 's have' : ' has'} finished downloading.`);
+                showToast('Done', `${done} image${done > 1 ? 's' : ''} downloaded!`, 'success');
+            }
+        }
+
+        function playNotificationChime() {
+            try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!AudioCtx) return;
+                const ctx = new AudioCtx();
+                const now = ctx.currentTime;
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(587.33, now);
+                osc.frequency.exponentialRampToValueAtTime(880, now + 0.12);
+                gain.gain.setValueAtTime(0.001, now);
+                gain.gain.exponentialRampToValueAtTime(0.25, now + 0.04);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start(now);
+                osc.stop(now + 0.5);
+            } catch (e) {}
+        }
+
+        function triggerDesktopNotification(title, body) {
+            if ('Notification' in window && Notification.permission === 'granted') {
+                try {
+                    new Notification(title, { body, icon: '/app.ico' });
+                } catch (e) {}
+            }
+        }
+
+        async function downloadImagesFromUrl(url) {
+            // 1. Analyze URL
+            const analyzeResp = await fetch('/api/images/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Nebula-Key': pairingKey },
+                body: JSON.stringify({ Url: url })
+            });
+            
+            if (!analyzeResp.ok) {
+                const failure = await analyzeResp.json().catch(() => ({}));
+                throw new Error(failure.error || 'Analysis failed');
+            }
+            const result = await analyzeResp.json();
+            
+            if (!result.images || result.images.length === 0) {
+                throw new Error('No images found on this page.');
+            }
+            
+            // Download every distinct candidate. This is what makes carousel
+            // posts and TikTok photo posts behave as a complete post download.
+            let downloaded = 0;
+            const seen = new Set();
+            for (const [index, image] of result.images.entries()) {
+                if (!image.url || seen.has(image.url)) continue;
+                seen.add(image.url);
+
+                try {
+                    const dlResp = await fetch('/api/images/download', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-Nebula-Key': pairingKey },
+                        body: JSON.stringify({ Url: image.url, SourceUrl: url })
+                    });
+
+                    if (!dlResp.ok) continue;
+                    const blob = await dlResp.blob();
+                    const blobUrl = URL.createObjectURL(blob);
+                    const disp = dlResp.headers.get('content-disposition') || '';
+                    const match = disp.match(/filename\*?=(?:UTF-8''|"?)([^";]+)/i);
+                    const safeTitle = String(result.title || 'social-image').replace(/[\\/:*?"<>|]+/g, '_');
+                    const fallbackExtension = blob.type.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+                    const name = match
+                        ? decodeURIComponent(match[1].replace(/"/g, ''))
+                        : `${safeTitle}_${index + 1}.${fallbackExtension}`;
+
+                    gallery.unshift({ name, blobUrl, originalUrl: url });
+                    downloaded++;
+                } catch (_) {
+                    // Keep downloading the remaining carousel items.
+                }
+            }
+
+            if (downloaded === 0) throw new Error('The post was found, but none of its images could be downloaded.');
+            return downloaded;
+        }
+
+        // ─── Gallery ────────────────────────────────────────────────────
+        function renderGallery() {
+            const grid  = document.getElementById('imgGrid');
+            const empty = document.getElementById('galleryEmpty');
+
+            if (gallery.length === 0) {
+                empty.style.display = 'flex';
+                grid.replaceChildren();
+                return;
+            }
+            empty.style.display = 'none';
+            grid.replaceChildren();
+            gallery.forEach((img, i) => {
+                const card = document.createElement('div');
+                card.className = 'img-card';
+                card.style.animationDelay = `${i * 40}ms`;
+
+                const image = document.createElement('img');
+                image.setAttribute('src', img.blobUrl);
+                image.setAttribute('alt', img.name);
+                image.setAttribute('loading', 'lazy');
+                image.setAttribute('decoding', 'async');
+                image.style.cursor = 'zoom-in';
+                image.addEventListener('click', () => openPreview(img.blobUrl));
+
+                const footer = document.createElement('div');
+                footer.className = 'img-card-footer';
+
+                const name = document.createElement('span');
+                name.className = 'img-card-name';
+                name.setAttribute('title', img.name);
+                name.textContent = img.name;
+
+                const saveButton = document.createElement('button');
+                saveButton.className = 'img-card-dl';
+                saveButton.setAttribute('type', 'button');
+                saveButton.setAttribute('title', 'Save to PC');
+                saveButton.setAttribute('aria-label', `Save ${img.name}`);
+                saveButton.textContent = '↓';
+                saveButton.addEventListener('click', () => saveImage(i));
+
+                footer.append(name, saveButton);
+                card.append(image, footer);
+                grid.appendChild(card);
+            });
+        }
+
+        function clearGallery() {
+            gallery.forEach(img => URL.revokeObjectURL(img.blobUrl));
+            gallery = [];
+            renderGallery();
+        }
+
+        function saveImage(index) {
+            const img = gallery[index];
+            if (!img) return;
+            const a = document.createElement('a');
+            a.href     = img.blobUrl;
+            a.download = img.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            showToast('Saved', `Saved: ${img.name}`, 'success');
+        }
+
+        // ─── Preview modal ──────────────────────────────────────────────
+        function openPreview(blobUrl) {
+            document.getElementById('previewImg').src = blobUrl;
+            document.getElementById('previewOverlay').classList.add('open');
+        }
+
+        function closePreview(e) {
+            if (e.target === document.getElementById('previewOverlay'))
+                document.getElementById('previewOverlay').classList.remove('open');
+        }
+
+        function closePreviewBtn() {
+            document.getElementById('previewOverlay').classList.remove('open');
+        }
+
+        // Close on Escape
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') document.getElementById('previewOverlay').classList.remove('open');
+        });
+
+        // ─── Toast ────────────────────────────────────────────────────
+        function showToast(title, message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+
+            const toastContent = document.createElement('div');
+            toastContent.className = 'toast-content';
+
+            const toastTitle = document.createElement('div');
+            toastTitle.className = 'toast-title';
+            toastTitle.textContent = String(title || '');
+            toastContent.appendChild(toastTitle);
+
+            if (message) {
+                const toastMessage = document.createElement('div');
+                toastMessage.className = 'toast-message';
+                toastMessage.textContent = String(message);
+                toastContent.appendChild(toastMessage);
+            }
+
+            const closeButton = document.createElement('button');
+            closeButton.className = 'toast-close';
+            closeButton.setAttribute('type', 'button');
+            closeButton.setAttribute('aria-label', 'Close notification');
+            closeButton.textContent = '×';
+            closeButton.addEventListener('click', () => {
+                toast.classList.add('toast-exit');
+                setTimeout(() => toast.remove(), 200);
+            });
+
+            toast.append(toastContent, closeButton);
+            container.appendChild(toast);
+            setTimeout(() => {
+                if (document.body.contains(toast)) {
+                    toast.classList.add('toast-exit');
+                    setTimeout(() => toast.remove(), 200);
+                }
+            }, 5000);
+        }
+
+    </script>
+    <script src="/static/animations.min.js"></script>
+</body>
+</html>

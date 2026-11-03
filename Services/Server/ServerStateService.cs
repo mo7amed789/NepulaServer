@@ -1,0 +1,39 @@
+using System.Threading;
+
+namespace NebulaServer.Services.Server;
+
+public sealed class ServerStateService
+{
+    private readonly Lock _lock = new();
+
+    private readonly ServerState _state = new();
+
+    public ServerState Get()
+    {
+        lock (_lock)
+        {
+            return new ServerState
+            {
+                IsLicensed = _state.IsLicensed,
+                LicenseKey = _state.LicenseKey,
+                IsServerRunning = _state.IsServerRunning,
+                IsPythonReady = _state.IsPythonReady,
+                PythonVersion = _state.PythonVersion,
+
+                LocalIp = _state.LocalIp,
+                Port = _state.Port,
+                DeviceId = _state.DeviceId,
+                LastUpdated = _state.LastUpdated
+            };
+        }
+    }
+
+    public void Update(Action<ServerState> update)
+    {
+        lock (_lock)
+        {
+            update(_state);
+            _state.LastUpdated = DateTime.UtcNow;
+        }
+    }
+}

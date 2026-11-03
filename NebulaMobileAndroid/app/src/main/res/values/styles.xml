@@ -1,0 +1,1 @@
+<resources><style name="Theme.Nebula" parent="android:style/Theme.Material.NoActionBar"><item name="android:fontFamily">sans</item><item name="android:colorAccent">#55E6FF</item><item name="android:navigationBarColor">#070B18</item><item name="android:statusBarColor">#070B18</item><item name="android:windowLightStatusBar">false</item></style></resources>

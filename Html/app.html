@@ -1,0 +1,1367 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tanzeel Media Downloader</title>
+    <link rel="stylesheet" href="/static/index.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <script>
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'light' || savedTheme === 'dark') {
+            document.documentElement.setAttribute('data-theme', savedTheme);
+        }
+    </script>
+    <style>
+        .video-card {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            margin-top: 16px;
+            border: 1px solid var(--border);
+            padding: 16px;
+            border-radius: var(--radius-md);
+            background-color: var(--bg-surface-hover);
+        }
+        .video-card img {
+            width: 100%;
+            border-radius: var(--radius-sm);
+            object-fit: contain;
+            max-height: 240px;
+            background-color: var(--bg-surface);
+        }
+        .video-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            background-color: var(--bg-surface-hover);
+            transition: border-color 0.2s;
+        }
+        .history-item:hover {
+            border-color: var(--border-hover);
+        }
+        .history-content {
+            flex: 1;
+            min-width: 0;
+            margin-right: 16px;
+        }
+        .history-title {
+            font-weight: 600;
+            font-size: 0.875rem;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .history-link {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: block;
+        }
+        .history-link:hover {
+            text-decoration: underline;
+        }
+        .skeleton-block {
+            width: 100%;
+            height: 200px;
+            margin-bottom: 8px;
+        }
+        .skeleton-text {
+            height: 20px;
+            width: 70%;
+        }
+        .skeleton-btn {
+            height: 40px;
+            width: 100%;
+        }
+        @keyframes fetchSuccess {
+            0%   { box-shadow: 0 0 0 0 rgba(16,185,129,0.65); border-color: #10b981; }
+            60%  { box-shadow: 0 0 0 14px rgba(16,185,129,0); }
+            100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); border-color: var(--border); }
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(18px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .fetch-success-pulse {
+            animation: fetchSuccess 0.9s cubic-bezier(0.22,1,0.36,1) forwards;
+        }
+        .video-card-animate {
+            animation: fadeInUp 0.4s cubic-bezier(0.16,1,0.3,1) both;
+        }
+        @keyframes spin {
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container app-shell">
+        <!-- Header -->
+        <header class="card app-header">
+            <div class="header-main">
+                <div class="brand-lockup">
+                    <div class="brand-mark" aria-hidden="true">
+                        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 3v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <div class="brand-eyebrow">LOCAL MEDIA WORKSPACE</div>
+                        <h1>Tanzeel Engine</h1>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button class="btn btn-icon" id="notifToggle" onclick="toggleNotificationPermission()" title="Enable desktop notifications" aria-label="Enable desktop notifications">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+                    </button>
+                    <button class="btn btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle dark or light mode" aria-label="Toggle dark or light mode">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                    </button>
+                    <a href="/images" class="btn btn-secondary header-link">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                        Images
+                    </a>
+                </div>
+            </div>
+            <div class="hero-copy">
+                <div>
+                    <span class="hero-kicker">FAST · PRIVATE · LOCAL</span>
+                    <p>Download video, audio, playlists, and social media images from one focused workspace.</p>
+                </div>
+                <div class="hero-pills" aria-label="Key capabilities">
+                    <span><i></i>Minimal encoding</span>
+                    <span><i></i>Live progress</span>
+                    <span><i></i>Runs on your PC</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Server Info -->
+        <section class="card server-card">
+            <div class="card-header">
+                <div>
+                    <span class="section-kicker">SYSTEM</span>
+                    <h2 class="card-title">Server status</h2>
+                </div>
+                <div id="serverBadge" class="status-badge">
+                    <div style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--text-muted);"></div>
+                    Connecting...
+                </div>
+            </div>
+            <div class="form-row">
+                <div>
+                    <div class="label">Server ID</div>
+                    <div id="serverId" class="text-mono text-sm mt-4 text-primary">-</div>
+                </div>
+                <div>
+                    <div class="label">Pairing Key</div>
+                    <div id="pairingKey" class="text-mono text-sm mt-4 text-primary">-</div>
+                </div>
+            </div>
+            <div class="startup-row">
+                <div>
+                    <div class="label">Windows Startup</div>
+                    <div class="field-help">Run Tanzeel quietly when Windows starts.</div>
+                </div>
+                <div>
+                    <button id="btnStartupToggle" class="btn btn-secondary btn-compact" onclick="toggleStartupApp()">Checking...</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Download Settings -->
+        <main class="card download-card">
+            <div class="card-header">
+                <div>
+                    <span class="section-kicker">NEW DOWNLOAD</span>
+                    <h2 class="card-title">Configure your media</h2>
+                    <p class="section-description">Paste a link, choose the output, and Tanzeel handles the rest.</p>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="label" for="videoUrl">Media URL</label>
+                <div class="url-entry">
+                    <span class="url-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07.07l2-2a5 5 0 0 0-7.07-7.07l-1.15 1.15"/><path d="M14 11a5 5 0 0 0-7.07-.07l-2 2A5 5 0 0 0 12 20l1.15-1.15"/></svg>
+                    </span>
+                    <input type="url" id="videoUrl" class="input" placeholder="Paste a YouTube, TikTok, Instagram, or media link" autocomplete="off" oninput="autoDetectPlaylist(); validateUrl(this)" onpaste="handleUrlPaste(event)">
+                    <button class="btn btn-secondary" onclick="fetchVideoQualities()" id="btnFetch">Analyze</button>
+                </div>
+                <div id="urlError" class="input-error-text">Please enter a valid URL.</div>
+            </div>
+
+            <!-- Video Info Skeleton -->
+            <div id="videoInfoSkeleton" class="video-card hidden">
+                <div class="skeleton skeleton-block"></div>
+                <div class="skeleton skeleton-text"></div>
+                <div class="skeleton skeleton-btn mt-4"></div>
+            </div>
+
+            <!-- Actual Video Info -->
+            <div id="videoInfoCard" class="video-card hidden">
+                <img id="videoThumbnail" src="" alt="Thumbnail" />
+                <h4 id="videoTitle" class="video-title"></h4>
+                <a id="btnDownloadThumbnail" href="#" target="_blank" class="btn btn-secondary" style="width: 100%;">Download Thumbnail</a>
+            </div>
+
+            <div class="settings-label-row">
+                <span>Output preferences</span>
+                <small>Optimized defaults are already selected.</small>
+            </div>
+            <div class="form-row settings-grid">
+                <div class="form-group">
+                    <label class="label" for="quality">Quality</label>
+                    <select id="quality" class="input" onchange="enforceAudioRules()">
+                        <option value="2160">4K</option>
+                        <option value="1080">1080P</option>
+                        <option value="720" selected>720P</option>
+                        <option value="480">480P</option>
+                        <option value="audio">Audio Only</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="label" for="format">Format</label>
+                    <select id="format" class="input" onchange="enforceAudioRules()">
+                        <option value="mp4">MP4</option>
+                        <option value="mp3">MP3</option>
+                    </select>
+                </div>
+                <div class="form-group" id="audioQualityGroup">
+                    <label class="label" for="audioQuality">Audio quality</label>
+                    <select id="audioQuality" class="input">
+                        <option value="96">96 kbps · smallest</option>
+                        <option value="128" selected>128 kbps · recommended</option>
+                        <option value="160">160 kbps · clearer</option>
+                        <option value="192">192 kbps · high</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="mode-hint" id="processingHint">
+                <span class="mode-hint-icon">⚡</span>
+                <span>Fast mode keeps compatible video untouched and uses a quick conversion only when MP4 requires it.</span>
+            </div>
+
+            <div class="option-grid">
+                <label class="checkbox-wrapper">
+                    <input type="checkbox" id="autoDownload" onchange="toggleAutoDownload()">
+                    <span><strong>Auto-download</strong><small>Start immediately after analysis.</small></span>
+                </label>
+
+                <label class="checkbox-wrapper">
+                    <input type="checkbox" id="isPlaylist" onchange="togglePlaylist()">
+                    <span><strong>Playlist mode</strong><small>Download multiple items in order.</small></span>
+                </label>
+            </div>
+
+            <div class="form-row hidden mt-4" id="playlistOptions">
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label class="label" for="playlistStart">From Item No.</label>
+                    <input type="number" id="playlistStart" class="input" placeholder="1" min="1">
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label class="label" for="playlistEnd">To Item No.</label>
+                    <input type="number" id="playlistEnd" class="input" placeholder="LAST" min="1">
+                </div>
+            </div>
+
+            <div id="segmentationContainer" class="mt-4">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="label" for="trimFrom">Trim From</label>
+                        <input type="text" id="trimFrom" class="input" placeholder="00:00:00" autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label class="label" for="trimTo">Trim To</label>
+                        <input type="text" id="trimTo" class="input" placeholder="00:00:00" autocomplete="off">
+                    </div>
+                </div>
+            </div>
+
+            <div class="option-grid option-grid-bottom">
+                <label class="checkbox-wrapper">
+                    <input type="checkbox" id="extractVocals">
+                    <span><strong>Extract vocals</strong><small>Use Demucs AI to isolate vocals.</small></span>
+                </label>
+
+                <label class="checkbox-wrapper">
+                    <input type="checkbox" id="fastMode" checked>
+                    <span><strong>Fast processing</strong><small>Limit re-encoding whenever possible.</small></span>
+                    <span class="check-badge">Recommended</span>
+                </label>
+            </div>
+
+            <div id="progressContainer" class="progress-container hidden mt-4" style="height: 24px; position: relative;">
+                <div id="progressBar" class="progress-bar"></div>
+                <div id="progressText" style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.8);">0%</div>
+            </div>
+            <div id="progressMeta" class="text-sm text-muted" style="min-height: 20px; margin-top: 8px; text-align: center;"></div>
+            <div id="progressDetails" class="progress-details hidden" aria-live="polite">
+                <div class="progress-detail-box">
+                    <span class="progress-detail-label">Internet speed</span>
+                    <strong id="internetSpeed">Calculating...</strong>
+                </div>
+                <div class="progress-detail-box">
+                    <span class="progress-detail-label">ETA</span>
+                    <strong id="downloadEta">Calculating...</strong>
+                </div>
+            </div>
+
+            <div class="download-actions">
+                <button class="btn btn-primary btn-start" id="btnStart" onclick="startDownload()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+                    Start download
+                </button>
+                <button class="btn btn-danger" onclick="cancelJob()">Cancel</button>
+                <button class="btn btn-success hidden" id="btnSaveToDesktop" onclick="downloadToPC()">Save file</button>
+            </div>
+        </main>
+
+        <!-- Supported Platforms -->
+        <section class="card platform-card">
+            <div class="card-header platform-header">
+                <div>
+                    <span class="section-kicker">SOURCES</span>
+                    <h2 class="card-title">Supported platforms</h2>
+                </div>
+            </div>
+            <div class="platform-list">
+                <!-- YouTube -->
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" style="color: #ff0000;" title="YouTube"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+                <!-- Twitter -->
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" style="color: #1da1f2;" title="Twitter / X"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                <!-- Instagram -->
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="url(#ig-grad)" title="Instagram">
+                    <defs>
+                        <linearGradient id="ig-grad" x1="0%" y1="100%" x2="100%" y2="0%">
+                            <stop offset="0%" stop-color="#f09433"/>
+                            <stop offset="25%" stop-color="#e6683c"/>
+                            <stop offset="50%" stop-color="#dc2743"/>
+                            <stop offset="75%" stop-color="#cc2366"/>
+                            <stop offset="100%" stop-color="#bc1888"/>
+                        </linearGradient>
+                    </defs>
+                    <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 1 0 0 12.324 6.162 6.162 0 0 0 0-12.324zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm3.98-10.181a1.44 1.44 0 1 1-2.88 0 1.44 1.44 0 0 1 2.88 0z"/>
+                </svg>
+                <!-- Facebook -->
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" style="color: #1877f2;" title="Facebook"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.469h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.469h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+                <!-- TikTok -->
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" style="color: var(--text-primary);" title="TikTok"><path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93v7.2c0 1.96-.5 3.96-1.7 5.47-1.16 1.46-2.92 2.45-4.8 2.76-1.87.31-3.86.13-5.54-.74-1.69-.87-3-2.31-3.7-4.04-.69-1.74-.82-3.7-.35-5.5.47-1.79 1.63-3.37 3.16-4.4 1.53-1.02 3.42-1.45 5.25-1.23.02 1.37.03 2.73.02 4.1-1.02-.17-2.11-.14-3.08.31-.98.45-1.77 1.26-2.16 2.23-.4.97-.4 2.1-.01 3.07.39.97 1.15 1.78 2.1 2.25.96.47 2.12.56 3.16.27 1.04-.29 1.94-.96 2.5-1.85.56-.89.84-2 .81-3.07V.02h-1.28z"/></svg>
+                <!-- SoundCloud -->
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" style="color: #ff5500;" title="SoundCloud"><path d="M11.66 12.27V5.55c0-.12.09-.22.21-.22.12 0 .21.1.21.22v6.72c0 .12-.09.22-.21.22-.12 0-.21-.1-.21-.22zM21.94 9.8c-2.3-2.35-6.3-2.35-8.62 0-.27.28-.5.59-.7 9.21H23.5c.34-1.22.18-2.58-.56-3.64-.26-.35-.59-.64-.98-.84L21.94 9.8zm-11.83 2.47v-4.1c0-.12.09-.22.21-.22.12 0 .21.1.21.22v4.1c0 .12-.09.22-.21.22-.12 0-.21-.1-.21-.22zm-1.57.06v-3.37c0-.12.09-.22.21-.22.12 0 .21.1.21.22v3.37c0 .12-.09.22-.21.22-.12 0-.21-.1-.21-.22zm-1.55.08V9.58c0-.12.09-.22.21-.22.12 0 .21.1.21.22v2.83c0 .12-.09.22-.21.22-.12 0-.21-.1-.21-.22zm-1.55.13V10.1c0-.12.09-.22.21-.22.12 0 .21.1.21.22v2.44c0 .12-.09.22-.21.22-.12 0-.21-.1-.21-.22zm-1.56.24v-2c0-.12.09-.22.21-.22.12 0 .21.1.21.22v2c0 .12-.09.22-.21.22-.12 0-.21-.1-.21-.22zm-1.54.43v-1.4c0-.12.09-.22.21-.22.12 0 .21.1.21.22v1.4c0 .12-.09.22-.21.22-.12 0-.21-.1-.21-.22zM.79 13.2h-.03c-.11 0-.2-.1-.2-.21v-.53c0-.12.09-.21.2-.21h.03c.12 0 .21.1.21.21v.53c0 .12-.09.21-.21.21z"/></svg>
+            </div>
+            <div class="platform-note">
+                Plus hundreds of sites supported by the media engine.
+            </div>
+        </section>
+
+        <!-- History -->
+        <section class="card history-card">
+            <div class="card-header history-header">
+                <div>
+                    <span class="section-kicker">RECENT ACTIVITY</span>
+                    <h2 class="card-title">Download history</h2>
+                </div>
+                <button class="btn btn-danger btn-compact" onclick="clearHistory()">Clear all</button>
+            </div>
+            
+            <div id="historyContainer" class="history-list">
+                <!-- Empty State -->
+                <div class="empty-state" id="historyEmptyState">
+                    <svg class="empty-state-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    </svg>
+                    <div class="empty-state-title">No downloads yet</div>
+                    <div class="empty-state-desc">Your downloaded videos and playlists will appear here.</div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
+    <script>
+        let globalPairingKey = '';
+        let currentJobId = null;
+        let isCurrentJobPlaylist = false;
+        let signalRConnection = null;
+        let autoDownloadStartedForUrl = '';
+
+        async function initSignalR() {
+            if (signalRConnection) return;
+            
+            showToast('SignalR', 'Connecting for live updates...', 'info');
+            signalRConnection = new signalR.HubConnectionBuilder()
+                .withUrl("/dashboardHub?X-Nebula-Key=" + encodeURIComponent(globalPairingKey))
+                .withAutomaticReconnect()
+                .build();
+                
+            signalRConnection.on("JobProgress", (data) => {
+                handleJobUpdate(data);
+            });
+            
+            signalRConnection.onreconnected(() => {
+                showToast('SignalR', 'Live updates reconnected', 'success');
+                if (currentJobId) {
+                    fetchInitialJobState(currentJobId);
+                }
+            });
+            
+            signalRConnection.onreconnecting(() => {
+                showToast('SignalR', 'Live updates reconnecting...', 'warning');
+            });
+            
+            signalRConnection.onclose(() => {
+                showToast('SignalR', 'Live updates disconnected', 'error');
+            });
+            
+            try {
+                await signalRConnection.start();
+                console.log("SignalR Connected.");
+                showToast('SignalR', 'Live updates connected', 'success');
+            } catch (err) {
+                console.error("SignalR Connection Error: ", err);
+                showToast('SignalR Error', 'Could not establish real-time connection.', 'error');
+            }
+        }
+
+        async function fetchInitialJobState(jobId) {
+            if (!jobId) return;
+            try {
+                const response = await fetch(`/api/jobs/${jobId}`, { headers: { 'X-Nebula-Key': globalPairingKey } });
+                if (response.ok) {
+                    const data = await response.json();
+                    handleJobUpdate(data);
+                }
+            } catch (e) { }
+        }
+
+        function handleJobUpdate(data) {
+            const jobId = data.jobId || data.JobId;
+            if (!currentJobId || jobId !== currentJobId) return;
+            
+            const state = (data.state || data.State || data.status || data.Status || "").toUpperCase();
+            const thumbnailUrl = data.thumbnailUrl || data.ThumbnailUrl;
+            const title = data.title || data.Title || data.originalTitle || data.OriginalTitle;
+            const progressPercentage = data.progressPercentage || data.ProgressPercentage;
+            const message = data.message || data.Message;
+            const speed = data.speed || data.Speed;
+            const eta = data.eta || data.Eta;
+            const speedBox = document.getElementById('internetSpeed');
+            const etaBox = document.getElementById('downloadEta');
+            if (speedBox) {
+                speedBox.textContent = state === 'DOWNLOADING' ? (speed || 'Calculating...') : '—';
+            }
+            if (etaBox) etaBox.textContent = eta || 'Calculating...';
+
+            if (thumbnailUrl && document.getElementById('videoThumbnail').src !== thumbnailUrl) {
+                document.getElementById('videoThumbnail').src = thumbnailUrl;
+                if (title) document.getElementById('videoTitle').textContent = title;
+                document.getElementById('btnDownloadThumbnail').href = `/api/jobs/thumbnail-proxy?url=${encodeURIComponent(thumbnailUrl)}`;
+                document.getElementById('videoInfoCard').classList.remove('hidden');
+            }
+
+            if (progressPercentage) {
+                let percentVal = parseFloat(progressPercentage.replace('%', ''));
+                if (!isNaN(percentVal)) updateProgress(percentVal, percentVal.toFixed(1) + '%');
+            }
+
+            if (state === 'COMPLETED') {
+                updateProgress(100, 'COMPLETED');
+                document.getElementById('progressMeta').textContent = 'Download complete';
+                if (speedBox) speedBox.textContent = 'Complete';
+                if (etaBox) etaBox.textContent = '00:00';
+                if (!notifiedJobs.has(jobId)) {
+                    notifiedJobs.add(jobId);
+                    notifyDownloadFinished(title, data.outputFileName, isCurrentJobPlaylist);
+                }
+                document.getElementById('btnSaveToDesktop').textContent = isCurrentJobPlaylist ? 'Save Playlist (ZIP)' : 'Save File';
+                document.getElementById('btnSaveToDesktop').classList.remove('hidden');
+                document.getElementById('btnStart').disabled = false;
+                loadHistory();
+            } else if (state === 'FAILED' || state === 'CANCELED') {
+                updateProgress(100, state, true);
+                document.getElementById('progressMeta').textContent = message || state;
+                if (speedBox) speedBox.textContent = '—';
+                if (etaBox) etaBox.textContent = '—';
+                if (document.getElementById('btnStart').disabled) {
+                    showToast(state === 'FAILED' ? 'Failed' : 'Cancelled', message || `Job ${state.toLowerCase()}`, state === 'FAILED' ? 'error' : 'warning');
+                }
+                document.getElementById('btnStart').disabled = false;
+            } else {
+                // Still running
+                let txt = state;
+                if (progressPercentage) txt += ` ${progressPercentage}`;
+                
+                let extraInfo = [];
+                if (speed) extraInfo.push(speed);
+                if (eta) extraInfo.push(`ETA: ${eta}`);
+                
+                if (extraInfo.length > 0) {
+                    txt += ` (${extraInfo.join(' | ')})`;
+                } else if (!progressPercentage && state === 'DOWNLOADING') {
+                    txt += ' (Calculating...)';
+                }
+
+                const progressMeta = document.getElementById('progressMeta');
+                if (progressMeta) {
+                    progressMeta.textContent = extraInfo.length > 0
+                        ? extraInfo.join(' | ')
+                        : (state === 'DOWNLOADING' ? 'Calculating ETA…' : '');
+                }
+                
+                const pText = document.getElementById('progressText');
+                if (pText) {
+                    let isPostProcessing = state === 'PROCESSING' || (progressPercentage && parseFloat(progressPercentage.replace('%', '')) >= 100);
+                    if (isPostProcessing) {
+                        const spinner = document.createElement('span');
+                        spinner.setAttribute('aria-hidden', 'true');
+                        spinner.textContent = '◌';
+                        spinner.style.cssText = 'display:inline-block;margin-left:8px;animation:spin 1s linear infinite;';
+                        pText.replaceChildren(document.createTextNode(`${txt} `), spinner);
+                    } else {
+                        pText.textContent = txt;
+                    }
+                }
+            }
+        }
+
+        // ─── Completion Notifications ───────────────────────────────────────
+        let originalDocumentTitle = document.title || 'Tanzeel Engine';
+        let titleFlashInterval = null;
+        const notifiedJobs = new Set();
+
+        function requestNotificationPermission() {
+            if ('Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission().then(updateNotificationBellState).catch(() => {});
+            }
+        }
+
+        function updateNotificationBellState() {
+            const bell = document.getElementById('notifToggle');
+            if (!bell) return;
+            if (!('Notification' in window)) {
+                bell.style.display = 'none';
+                return;
+            }
+            if (Notification.permission === 'granted') {
+                bell.title = 'Desktop Notifications: Enabled';
+                bell.style.color = 'var(--success)';
+            } else if (Notification.permission === 'denied') {
+                bell.title = 'Desktop Notifications: Blocked in browser';
+                bell.style.color = 'var(--danger)';
+            } else {
+                bell.title = 'Click to enable Desktop Notifications';
+                bell.style.color = 'var(--text-muted)';
+            }
+        }
+
+        function toggleNotificationPermission() {
+            if (!('Notification' in window)) {
+                showToast('Not Supported', 'Desktop notifications are not supported in this browser.', 'warning');
+                return;
+            }
+            if (Notification.permission === 'default') {
+                Notification.requestPermission().then(p => {
+                    updateNotificationBellState();
+                    if (p === 'granted') {
+                        showToast('Notifications Enabled', 'You will receive desktop alerts when downloads finish.', 'success');
+                        playNotificationChime();
+                    } else {
+                        showToast('Notifications Disabled', 'You can enable them later in your browser settings.', 'warning');
+                    }
+                });
+            } else if (Notification.permission === 'granted') {
+                showToast('Notifications Active', 'Desktop notifications are already enabled.', 'info');
+                playNotificationChime();
+            } else {
+                showToast('Permission Blocked', 'Please enable notifications in your browser site permissions.', 'warning');
+            }
+        }
+
+        function playNotificationChime() {
+            try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!AudioCtx) return;
+                const ctx = new AudioCtx();
+                
+                const playTone = (freq, startOffset, duration, volume) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    const now = ctx.currentTime + startOffset;
+
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(freq, now);
+
+                    gain.gain.setValueAtTime(0.0001, now);
+                    gain.gain.linearRampToValueAtTime(volume, now + 0.02);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+
+                    osc.start(now);
+                    osc.stop(now + duration);
+                };
+
+                // Play ascending harmonious two-tone chime (D5 -> A5)
+                playTone(587.33, 0, 0.22, 0.20);
+                playTone(880.00, 0.10, 0.38, 0.25);
+            } catch (e) {
+                console.warn('Audio chime playback failed:', e);
+            }
+        }
+
+        function triggerDesktopNotification(title, body, iconUrl) {
+            if (!('Notification' in window)) return;
+
+            if (Notification.permission === 'granted') {
+                try {
+                    const notif = new Notification(title, {
+                        body: body,
+                        icon: iconUrl || '/app.ico',
+                        badge: '/app.ico'
+                    });
+                    notif.onclick = function () {
+                        window.focus();
+                        downloadToPC();
+                        notif.close();
+                    };
+                } catch (e) {
+                    console.warn('Desktop notification error:', e);
+                }
+            }
+        }
+
+        function flashDocumentTitle(alertText) {
+            if (titleFlashInterval) clearInterval(titleFlashInterval);
+            let isAlert = true;
+            titleFlashInterval = setInterval(() => {
+                document.title = isAlert ? alertText : originalDocumentTitle;
+                isAlert = !isAlert;
+            }, 1000);
+
+            const onFocus = () => {
+                if (titleFlashInterval) {
+                    clearInterval(titleFlashInterval);
+                    titleFlashInterval = null;
+                }
+                document.title = originalDocumentTitle;
+                window.removeEventListener('focus', onFocus);
+            };
+            window.addEventListener('focus', onFocus);
+        }
+
+        function notifyDownloadFinished(title, filename, isPlaylist) {
+            const displayTitle = title || filename || (isPlaylist ? 'Playlist' : 'Media file');
+
+            // 1. Play audio chime
+            playNotificationChime();
+
+            // 2. Desktop OS notification
+            const thumbSrc = document.getElementById('videoThumbnail')?.src;
+            triggerDesktopNotification('Download Finished! 🎉', `${displayTitle} is ready to save.`, thumbSrc);
+
+            // 3. Tab title notification if in background
+            if (document.hidden) {
+                flashDocumentTitle('✓ Download Complete!');
+            }
+
+            // 4. In-App Toast with Save File button
+            const actionLabel = isPlaylist ? 'Save Playlist (ZIP)' : 'Save File';
+            const content = document.createElement('div');
+            content.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-top:2px;';
+
+            const fileTitle = document.createElement('div');
+            fileTitle.style.cssText = 'font-size:0.875rem;color:var(--text-secondary);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+            fileTitle.textContent = displayTitle || 'Your file';
+
+            const saveButton = document.createElement('button');
+            saveButton.className = 'btn btn-sm btn-primary';
+            saveButton.style.cssText = 'align-self:flex-start;padding:5px 12px;font-size:0.8rem;margin-top:4px;border-radius:var(--radius-sm);font-weight:600;cursor:pointer;';
+            saveButton.textContent = `📥 ${actionLabel}`;
+            saveButton.addEventListener('click', downloadToPC);
+
+            content.append(fileTitle, saveButton);
+            showToast('Download Finished! 🎉', content, 'success', 8000);
+        }
+
+        function toggleTheme() {
+            const currentTheme = document.documentElement.getAttribute('data-theme');
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+        }
+
+        function showToast(title, message, type = 'info', duration = 5000) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+
+            const toastContent = document.createElement('div');
+            toastContent.className = 'toast-content';
+
+            const toastTitle = document.createElement('div');
+            toastTitle.className = 'toast-title';
+            toastTitle.textContent = String(title || '');
+            toastContent.appendChild(toastTitle);
+
+            if (message) {
+                const toastMessage = document.createElement('div');
+                toastMessage.className = 'toast-message';
+                if (message instanceof Node) {
+                    toastMessage.appendChild(message);
+                } else {
+                    toastMessage.textContent = String(message);
+                }
+                toastContent.appendChild(toastMessage);
+            }
+
+            const closeButton = document.createElement('button');
+            closeButton.className = 'toast-close';
+            closeButton.setAttribute('type', 'button');
+            closeButton.setAttribute('aria-label', 'Close notification');
+            closeButton.textContent = '×';
+            closeButton.addEventListener('click', () => {
+                toast.classList.add('toast-exit');
+                setTimeout(() => toast.remove(), 200);
+            });
+
+            toast.append(toastContent, closeButton);
+            
+            container.appendChild(toast);
+            
+            // Auto remove
+            setTimeout(() => {
+                if (document.body.contains(toast)) {
+                    toast.classList.add('toast-exit');
+                    setTimeout(() => toast.remove(), 200);
+                }
+            }, duration);
+        }
+
+        function validateUrl(input) {
+            const error = document.getElementById('urlError');
+            if (!input.value.trim()) {
+                input.classList.add('error');
+                error.style.display = 'block';
+                return false;
+            } else {
+                input.classList.remove('error');
+                error.style.display = 'none';
+                return true;
+            }
+        }
+
+        function enforceAudioRules() {
+            const qualitySelect = document.getElementById('quality');
+            const formatSelect = document.getElementById('format');
+            const audioQualityGroup = document.getElementById('audioQualityGroup');
+            const processingHint = document.getElementById('processingHint');
+
+            localStorage.setItem('nebula.downloadQuality', qualitySelect.value);
+            if (audioQualityGroup) audioQualityGroup.classList.toggle('hidden', formatSelect.value !== 'mp3');
+            if (processingHint) {
+                processingHint.querySelector('span:last-child').textContent = formatSelect.value === 'mp3'
+                    ? '128 kbps keeps audio clear while making the file smaller and faster to create.'
+                    : 'Fast mode keeps compatible video untouched and uses a quick conversion only when MP4 requires it.';
+            }
+
+            if (qualitySelect.value === 'audio') {
+                if (formatSelect.value === 'mp4' || formatSelect.value === 'mkv') {
+                    formatSelect.value = 'mp3';
+                    showToast('Format Updated', 'Format changed to MP3 for Audio Only', 'info');
+                }
+            }
+        }
+
+        function toggleAutoDownload() {
+            const enabled = document.getElementById('autoDownload').checked;
+            localStorage.setItem('nebula.autoDownload', enabled ? 'true' : 'false');
+
+            if (enabled && lastFetchedUrl === document.getElementById('videoUrl').value.trim()) {
+                startAutoDownload(lastFetchedUrl);
+            }
+        }
+
+        function startAutoDownload(url) {
+            const autoDownload = document.getElementById('autoDownload');
+            if (!autoDownload.checked || !url || autoDownloadStartedForUrl === url || currentJobId) return;
+
+            autoDownloadStartedForUrl = url;
+            const playlist = document.getElementById('isPlaylist');
+            playlist.checked = true;
+            togglePlaylist();
+            // Auto mode always means the complete playlist, regardless of any
+            // range left over from a previous manual download.
+            document.getElementById('playlistStart').value = '';
+            document.getElementById('playlistEnd').value = '';
+            showToast('Auto-download', 'Starting the complete playlist at the selected quality.', 'info');
+            startDownload();
+        }
+
+        function autoDetectPlaylist() {
+            const url = document.getElementById('videoUrl').value;
+            const isPlaylistCheckbox = document.getElementById('isPlaylist');
+
+            if (url.includes('list=')) {
+                if (!isPlaylistCheckbox.checked) {
+                    isPlaylistCheckbox.checked = true;
+                    togglePlaylist();
+                    showToast('Playlist Detected', 'Playlist mode has been enabled automatically.', 'info');
+                }
+            }
+        }
+
+        let pasteFetchTimer = null;
+        let previewAbortController = null;
+        let previewRequestUrl = '';
+        let lastFetchedUrl = '';
+
+        // Pasting is the common URL-entry path. Wait for the browser to
+        // finish inserting the clipboard text, then start the existing
+        // metadata request automatically. A small debounce prevents duplicate
+        // requests from browser/input event ordering.
+        function handleUrlPaste(event) {
+            const input = event.currentTarget;
+            window.clearTimeout(pasteFetchTimer);
+            pasteFetchTimer = window.setTimeout(() => {
+                const url = input.value.trim();
+                autoDetectPlaylist();
+                validateUrl(input);
+
+                try {
+                    const parsed = new URL(url);
+                    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || url === lastFetchedUrl) {
+                        return;
+                    }
+                } catch (_) {
+                    return;
+                }
+
+                fetchVideoQualities(true);
+            }, 40);
+        }
+
+        function togglePlaylist() {
+            const isChecked = document.getElementById('isPlaylist').checked;
+            const opts = document.getElementById('playlistOptions');
+            const seg = document.getElementById('segmentationContainer');
+            
+            if (isChecked) {
+                opts.classList.remove('hidden');
+                seg.classList.add('hidden');
+                document.getElementById('trimFrom').value = '';
+                document.getElementById('trimTo').value = '';
+            } else {
+                opts.classList.add('hidden');
+                seg.classList.remove('hidden');
+            }
+        }
+
+        async function loadPairingData() {
+            try {
+                const pairRes = await fetch('/api/pairing', { headers: { 'X-Nebula-Key': globalPairingKey } });
+                const pairData = await pairRes.json();
+
+                const stateRes = await fetch('/api/server/state', { headers: { 'X-Nebula-Key': globalPairingKey } });
+                const stateData = await stateRes.json();
+
+                globalPairingKey = pairData.pairingKey || '';
+                document.getElementById('serverId').textContent = pairData.serverId || '-';
+                document.getElementById('pairingKey').textContent = (globalPairingKey).substring(0, 15) + '...';
+
+                const badge = document.getElementById('serverBadge');
+                if (stateData.isServerRunning) {
+                    badge.innerHTML = `<div style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--success); box-shadow: 0 0 8px var(--success);"></div><span style="color: var(--success);">Connected</span>`;
+                } else {
+                    badge.innerHTML = `<div style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--danger); box-shadow: 0 0 8px var(--danger);"></div><span style="color: var(--danger);">Disconnected</span>`;
+                }
+            } catch (e) {
+                const badge = document.getElementById('serverBadge');
+                badge.innerHTML = `<div style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--danger);"></div><span style="color: var(--danger);">Error</span>`;
+            }
+        }
+
+        async function fetchVideoQualities(isAutomatic = false) {
+            const urlInput = document.getElementById('videoUrl');
+            if (!validateUrl(urlInput)) {
+                showToast('Validation Error', 'Please enter a valid URL first.', 'error');
+                return;
+            }
+
+            const url = urlInput.value.trim();
+            const qualitySelect = document.getElementById('quality');
+            const btnFetch = document.getElementById('btnFetch');
+
+            if (isAutomatic && url === lastFetchedUrl) return;
+            if (previewRequestUrl === url && btnFetch.disabled) return;
+
+            previewAbortController?.abort();
+            const requestController = new AbortController();
+            previewAbortController = requestController;
+            previewRequestUrl = url;
+            
+            qualitySelect.innerHTML = '<option value="best">Loading options...</option>';
+            document.getElementById('videoInfoCard').classList.add('hidden');
+            document.getElementById('videoInfoSkeleton').classList.remove('hidden');
+            btnFetch.disabled = true;
+
+            try {
+                const response = await fetch('/api/jobs/preview?url=' + encodeURIComponent(url), {
+                    headers: { 'X-Nebula-Key': globalPairingKey },
+                    signal: requestController.signal
+                });
+                
+                if (!response.ok) throw new Error('Failed to fetch preview');
+
+                const data = await response.json();
+                let targetInfo = data.entries && data.entries.length > 0 ? data.entries[0] : data;
+
+                if (targetInfo.thumbnailUrl || targetInfo.thumbnail || targetInfo.thumb) {
+                    const tUrl = targetInfo.thumbnailUrl || targetInfo.thumbnail || targetInfo.thumb;
+                    document.getElementById('videoThumbnail').src = tUrl;
+                    document.getElementById('videoTitle').textContent = targetInfo.title || targetInfo.name || "Ready to download";
+                    document.getElementById('btnDownloadThumbnail').href = `/api/jobs/thumbnail-proxy?url=${encodeURIComponent(tUrl)}`;
+                    
+                    document.getElementById('videoInfoSkeleton').classList.add('hidden');
+                    document.getElementById('videoInfoCard').classList.remove('hidden');
+                } else {
+                    document.getElementById('videoInfoSkeleton').classList.add('hidden');
+                }
+
+                qualitySelect.innerHTML = '';
+
+                let qualities = targetInfo.availableQualities || [];
+                if (qualities.length > 0) {
+                    qualities.forEach(q => {
+                        const opt = document.createElement('option');
+                        const isAudio = q.label === 'audio';
+                        const sizeText = q.filesizeDisplay ? ` - ${q.filesizeDisplay}` : '';
+                        opt.value = q.label;
+                        opt.textContent = (isAudio ? 'Audio Only' : q.label + 'P') + sizeText;
+                        qualitySelect.appendChild(opt);
+                    });
+                    restoreSavedQuality();
+
+                    // Success effect: pulse the video info card
+                    const card = document.getElementById('videoInfoCard');
+                    card.classList.remove('video-card-animate', 'fetch-success-pulse');
+                    void card.offsetWidth; // force reflow
+                    card.classList.add('video-card-animate', 'fetch-success-pulse');
+
+                    showToast('Success', 'Video information loaded successfully.', 'success');
+                    lastFetchedUrl = url;
+                    startAutoDownload(url);
+                } else {
+                    restoreDefaultQualities();
+                }
+            } catch (err) {
+                if (err.name === 'AbortError') return;
+                document.getElementById('videoInfoSkeleton').classList.add('hidden');
+                restoreDefaultQualities();
+                showToast('Fetch Failed', 'Could not load video metadata. You can still try downloading.', 'warning');
+            } finally {
+                if (previewAbortController === requestController) {
+                    previewAbortController = null;
+                    previewRequestUrl = '';
+                    btnFetch.disabled = false;
+                }
+            }
+        }
+
+        function restoreDefaultQualities() {
+            document.getElementById('quality').innerHTML = `
+                <option value="2160">4K</option>
+                <option value="1080">1080P</option>
+                <option value="720" selected>720P</option>
+                <option value="480">480P</option>
+                <option value="audio">Audio Only</option>`;
+
+            restoreSavedQuality();
+        }
+
+        function restoreSavedQuality() {
+            const savedQuality = localStorage.getItem('nebula.downloadQuality');
+            const quality = document.getElementById('quality');
+            if (savedQuality && [...quality.options].some(option => option.value === savedQuality)) {
+                quality.value = savedQuality;
+            }
+        }
+
+        function updateProgress(percent, textMsg, isFailed = false) {
+            const bar = document.getElementById('progressBar');
+            const text = document.getElementById('progressText');
+            const container = document.getElementById('progressContainer');
+            const details = document.getElementById('progressDetails');
+
+            container.classList.remove('hidden');
+            if (details) details.classList.remove('hidden');
+            bar.style.width = percent + '%';
+            text.textContent = textMsg || (percent + '%');
+
+            if (isFailed) {
+                bar.style.backgroundColor = 'var(--danger)';
+            } else if (textMsg === 'COMPLETED') {
+                bar.style.backgroundColor = 'var(--success)';
+            } else {
+                bar.style.backgroundColor = 'var(--primary)';
+            }
+        }
+
+        async function startDownload() {
+            requestNotificationPermission();
+
+            const urlInput = document.getElementById('videoUrl');
+            if (!validateUrl(urlInput)) {
+                showToast('Validation Error', 'A valid URL is required to start download.', 'error');
+                return;
+            }
+
+            document.getElementById('btnSaveToDesktop').classList.add('hidden');
+            updateProgress(0, 'Starting...');
+
+            const isPlaylistChecked = document.getElementById('isPlaylist').checked;
+            isCurrentJobPlaylist = isPlaylistChecked;
+
+            const playlistStartVal = document.getElementById('playlistStart').value;
+            const playlistEndVal = document.getElementById('playlistEnd').value;
+
+            let finalQuality = document.getElementById('quality').value;
+            if (finalQuality === 'audio') finalQuality = 'best';
+
+            const payload = {
+                Url: urlInput.value.trim(),
+                Quality: finalQuality,
+                Format: document.getElementById('format').value,
+                AudioQuality: document.getElementById('audioQuality').value,
+                FastMode: document.getElementById('fastMode').checked,
+                SegmentStart: document.getElementById('trimFrom').value.trim() || null,
+                SegmentEnd: document.getElementById('trimTo').value.trim() || null,
+                ExtractVocals: document.getElementById('extractVocals').checked,
+                IsPlaylist: isPlaylistChecked,
+                PlaylistStart: (isPlaylistChecked && playlistStartVal) ? parseInt(playlistStartVal, 10) : null,
+                PlaylistEnd: (isPlaylistChecked && playlistEndVal) ? parseInt(playlistEndVal, 10) : null
+            };
+
+            document.getElementById('btnStart').disabled = true;
+
+            try {
+                await initSignalR();
+
+                const response = await fetch('/api/jobs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Nebula-Key': globalPairingKey },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.status === 429) {
+                    throw new Error("Too many requests. Please wait a moment.");
+                }
+
+                const text = await response.text();
+                let data = {};
+                try { data = JSON.parse(text); } catch(e) { }
+
+                if (response.ok) {
+                    currentJobId = data.jobId;
+                    showToast('Job Started', 'Your download has been queued.', 'info');
+                    fetchInitialJobState(currentJobId);
+                } else {
+                    updateProgress(100, 'Error', true);
+                    showToast('Error', data.message || 'Unknown error occurred', 'error');
+                    document.getElementById('btnStart').disabled = false;
+                }
+            } catch (error) {
+                updateProgress(100, 'Network error', true);
+                showToast('Network Error', error.message || 'Could not connect to the server.', 'error');
+                document.getElementById('btnStart').disabled = false;
+            }
+        }
+
+        async function downloadToPC() {
+            if (!currentJobId) return;
+            showToast('Preparing File', 'Starting download to your device...', 'info');
+
+            try {
+                const downloadUrlPath = isCurrentJobPlaylist
+                    ? `/api/jobs/${currentJobId}/download?archive=true`
+                    : `/api/jobs/${currentJobId}/download`;
+
+                const response = await fetch(downloadUrlPath, { headers: { 'X-Nebula-Key': globalPairingKey } });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const downloadUrl = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.style.display = 'none';
+                    a.href = downloadUrl;
+
+                    let filename = isCurrentJobPlaylist ? 'Playlist.zip' : 'Video.mp4';
+                    const disposition = response.headers.get('Content-Disposition');
+                    if (disposition) {
+                        const utf8Regex = /filename\*=UTF-8''([^;\n]*)/i;
+                        const utf8Match = utf8Regex.exec(disposition);
+                        if (utf8Match && utf8Match[1]) filename = decodeURIComponent(utf8Match[1]);
+                        else {
+                            const normalRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/i;
+                            const normalMatch = normalRegex.exec(disposition);
+                            if (normalMatch && normalMatch[1]) filename = decodeURIComponent(normalMatch[1].replace(/['"]/g, ''));
+                        }
+                    }
+
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(downloadUrl);
+                    showToast('Success', `File downloaded: ${filename}`, 'success');
+                } else {
+                    showToast('Error', 'Failed to save file to device.', 'error');
+                }
+            } catch (error) {
+                showToast('Error', 'An error occurred while downloading.', 'error');
+            }
+        }
+
+        async function cancelJob() {
+            if (!currentJobId) return;
+            try {
+                const response = await fetch(`/api/jobs/${currentJobId}/cancel`, { method: 'POST', headers: { 'X-Nebula-Key': globalPairingKey } });
+                if (response.ok) {
+                    currentJobId = null;
+                    document.getElementById('btnSaveToDesktop').classList.add('hidden');
+                    updateProgress(0, 'CANCELLED', true);
+                    showToast('Cancelled', 'Job cancelled successfully.', 'warning');
+                    document.getElementById('btnStart').disabled = false;
+                }
+            } catch (error) { showToast('Error', 'Failed to cancel job.', 'error'); }
+        }
+
+        async function loadHistory() {
+            try {
+                const res = await fetch('/api/jobs/history');
+                if (res.ok) {
+                    const history = await res.json();
+                    const container = document.getElementById('historyContainer');
+                    const emptyState = document.getElementById('historyEmptyState');
+
+                    // Keep API-provided values out of HTML parsing entirely.
+                    Array.from(container.children).forEach(child => {
+                        if (child.id !== 'historyEmptyState') child.remove();
+                    });
+                    
+                    if (history.length === 0) {
+                        emptyState.style.display = 'flex';
+                        return;
+                    }
+                    
+                    emptyState.style.display = 'none';
+                    const fragment = document.createDocumentFragment();
+
+                    const toSafeHttpUrl = value => {
+                        try {
+                            const parsed = new URL(String(value || ''));
+                            return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+                                ? parsed.href
+                                : null;
+                        } catch (_) {
+                            return null;
+                        }
+                    };
+
+                    for (const job of history) {
+                        const jobId = String(job.id || '');
+                        const rawUrl = String(job.url || '');
+                        const safeUrl = toSafeHttpUrl(rawUrl);
+                        const title = String(job.title || (job.outputPath ? job.outputPath.split(/[\\/]/).pop() : (rawUrl || 'Unknown')));
+                        const thumbUrl = job.thumbnailUrl || job.ThumbnailUrl || job.thumbnail;
+
+                        const item = document.createElement('div');
+                        item.className = 'history-item';
+                        item.style.gap = '12px';
+
+                        const safeThumbUrl = toSafeHttpUrl(thumbUrl);
+                        if (safeThumbUrl) {
+                            const image = document.createElement('img');
+                            image.setAttribute('src', `/api/jobs/thumbnail-proxy?url=${encodeURIComponent(safeThumbUrl)}`);
+                            image.setAttribute('alt', 'Download thumbnail');
+                            image.setAttribute('loading', 'lazy');
+                            image.setAttribute('decoding', 'async');
+                            image.style.cssText = 'width:80px;height:50px;object-fit:cover;border-radius:var(--radius-sm);flex-shrink:0;';
+                            item.appendChild(image);
+                        } else {
+                            const placeholder = document.createElement('div');
+                            placeholder.setAttribute('aria-hidden', 'true');
+                            placeholder.textContent = '▧';
+                            placeholder.style.cssText = 'width:80px;height:50px;background:var(--bg-elevated);border-radius:var(--radius-sm);flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);';
+                            item.appendChild(placeholder);
+                        }
+
+                        const content = document.createElement('div');
+                        content.className = 'history-content';
+
+                        const titleElement = document.createElement('div');
+                        titleElement.className = 'history-title';
+                        titleElement.textContent = title;
+                        titleElement.setAttribute('title', title);
+                        content.appendChild(titleElement);
+
+                        const link = safeUrl ? document.createElement('a') : document.createElement('span');
+                        link.className = 'history-link';
+                        link.textContent = rawUrl || 'Invalid or missing URL';
+                        link.setAttribute('title', rawUrl);
+                        if (safeUrl) {
+                            link.setAttribute('href', safeUrl);
+                            link.setAttribute('target', '_blank');
+                            link.setAttribute('rel', 'noopener noreferrer');
+                        }
+                        content.appendChild(link);
+                        item.appendChild(content);
+
+                        const actions = document.createElement('div');
+                        actions.style.cssText = 'display:flex;gap:8px;flex-shrink:0;';
+
+                        const saveButton = document.createElement('button');
+                        saveButton.className = 'btn btn-primary text-xs';
+                        saveButton.style.cssText = 'padding:6px 12px;';
+                        saveButton.textContent = 'Save';
+                        saveButton.disabled = !jobId;
+                        saveButton.addEventListener('click', () => downloadHistoryItem(jobId));
+
+                        const removeButton = document.createElement('button');
+                        removeButton.className = 'btn btn-secondary text-xs';
+                        removeButton.style.cssText = 'padding:6px 12px;';
+                        removeButton.textContent = 'Remove';
+                        removeButton.disabled = !jobId;
+                        removeButton.addEventListener('click', () => removeHistoryItem(jobId));
+
+                        actions.append(saveButton, removeButton);
+                        item.appendChild(actions);
+                        fragment.appendChild(item);
+                    }
+                    container.appendChild(fragment);
+                }
+            } catch(e) {}
+        }
+
+        async function downloadHistoryItem(id) {
+            if (!id) return;
+            showToast('Preparing File', 'Starting download to your device...', 'info');
+
+            try {
+                const response = await fetch(`/api/jobs/${id}/download`, { headers: { 'X-Nebula-Key': globalPairingKey } });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const downloadUrl = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.style.display = 'none';
+                    a.href = downloadUrl;
+
+                    let filename = 'Download';
+                    const disposition = response.headers.get('Content-Disposition');
+                    if (disposition) {
+                        const utf8Regex = /filename\*=UTF-8''([^;\n]*)/i;
+                        const utf8Match = utf8Regex.exec(disposition);
+                        if (utf8Match && utf8Match[1]) filename = decodeURIComponent(utf8Match[1]);
+                        else {
+                            const normalRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/i;
+                            const normalMatch = normalRegex.exec(disposition);
+                            if (normalMatch && normalMatch[1]) filename = decodeURIComponent(normalMatch[1].replace(/['"]/g, ''));
+                        }
+                    }
+
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(downloadUrl);
+                    showToast('Success', `File downloaded: ${filename}`, 'success');
+                } else {
+                    showToast('Error', 'Failed to save file. File might no longer exist on server disk.', 'error');
+                }
+            } catch (error) {
+                showToast('Error', 'An error occurred while downloading.', 'error');
+            }
+        }
+
+        async function removeHistoryItem(id) {
+            try {
+                await fetch('/api/jobs/history/' + id, { method: 'DELETE' });
+                showToast('Removed', 'History item deleted.', 'info');
+                loadHistory();
+            } catch(e) {}
+        }
+
+        async function clearHistory() {
+            if (!confirm('Are you sure you want to clear all history?')) return;
+            try {
+                await fetch('/api/jobs/history', { method: 'DELETE' });
+                showToast('Cleared', 'Download history cleared.', 'success');
+                loadHistory();
+            } catch(e) {}
+        }
+
+        async function loadStartupApp() {
+            try {
+                const res = await fetch('/api/system/startup');
+                if (res.ok) {
+                    const data = await res.json();
+                    const btn = document.getElementById('btnStartupToggle');
+                    if (btn) {
+                        btn.textContent = data.enabled ? 'Enabled' : 'Disabled';
+                        btn.className = data.enabled ? 'btn btn-primary' : 'btn btn-secondary';
+                    }
+                }
+            } catch(e) {}
+        }
+
+        async function toggleStartupApp() {
+            const btn = document.getElementById('btnStartupToggle');
+            const currentlyEnabled = btn && btn.textContent === 'Enabled';
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/system/startup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: !currentlyEnabled })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (btn) {
+                        btn.textContent = data.enabled ? 'Enabled' : 'Disabled';
+                        btn.className = data.enabled ? 'btn btn-primary' : 'btn btn-secondary';
+                        showToast('Windows Startup', data.enabled ? 'Tanzeel will start in background with Windows.' : 'Startup disabled.', 'info');
+                    }
+                }
+            } catch(e) {}
+            finally {
+                btn.disabled = false;
+            }
+        }
+
+        document.getElementById('autoDownload').checked = localStorage.getItem('nebula.autoDownload') === 'true';
+        restoreSavedQuality();
+        enforceAudioRules();
+        loadPairingData();
+        setInterval(loadPairingData, 5000);
+        loadHistory();
+        loadStartupApp();
+        updateNotificationBellState();
+    </script>
+    <script src="/static/animations.min.js"></script>
+</body>
+</html>
