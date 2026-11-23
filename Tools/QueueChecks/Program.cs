@@ -122,8 +122,38 @@ finally
 
 store.DeleteJob("legacy");
 Check(store.GetById("legacy") is null, "Delete removes only the selected history entry");
+
+store.Save(new JobSnapshot
+{
+    Id = "completed",
+    Url = "https://example.com/completed",
+    Status = "COMPLETED",
+    Progress = 100,
+    OutputPath = Path.Combine(RuntimePaths.Data, "completed.mp4"),
+    CreatedAt = DateTime.UtcNow,
+    RequestJson = "{}"
+});
+File.WriteAllText(Path.Combine(RuntimePaths.Data, "completed.mp4"), "saved media");
+store.Save(new JobSnapshot
+{
+    Id = "active",
+    Url = "https://example.com/active",
+    Status = "DOWNLOADING",
+    Progress = 50,
+    OutputPath = Path.Combine(RuntimePaths.Data, "active.mp4"),
+    CreatedAt = DateTime.UtcNow,
+    RequestJson = "{}"
+});
+File.WriteAllText(Path.Combine(RuntimePaths.Data, "active.mp4"), "active media");
 store.ClearHistory();
-Check(store.GetAllHistory().Count == 0, "Clear history removes all rows");
+Check(store.GetById("completed") is null && store.GetById("active") is not null,
+    "Clear history removes terminal rows while retaining active downloads");
+Check(File.Exists(Path.Combine(RuntimePaths.Data, "completed.mp4")) &&
+      File.Exists(Path.Combine(RuntimePaths.Data, "active.mp4")),
+    "Clearing history keeps downloaded files on disk");
+var reopenedAfterClear = new JobStore(path);
+Check(reopenedAfterClear.GetById("completed") is null && reopenedAfterClear.GetById("active") is not null,
+    "History deletion persists after reopening the database");
 SqliteConnection.ClearAllPools();
 Console.WriteLine($"Passed {checks} queue/store regression checks.");
 

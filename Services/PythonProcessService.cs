@@ -72,6 +72,11 @@ public class PythonProcessService
         startInfo.Environment["PYTHONUNBUFFERED"] = "1";
         startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
         startInfo.Environment["PYTHONUTF8"] = "1";
+        // Do not inherit a stale machine-level proxy when the user has not
+        // configured one in the download request. yt-dlp receives an explicit
+        // empty proxy through the request options and connects directly.
+        foreach (var proxyName in new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy" })
+            startInfo.Environment.Remove(proxyName);
         startInfo.Environment["NEBULA_FRAGMENT_DOWNLOADS"] =
             _configuration.GetValue("Performance:ConcurrentFragmentDownloads", 16).ToString();
         startInfo.Environment["NEBULA_HTTP_CHUNK_SIZE"] =
@@ -122,17 +127,27 @@ public class PythonProcessService
             EnableRaisingEvents = true
         };
 
-        if (!process.Start())
+        try
         {
-            throw new InvalidOperationException("Failed to start Python process.");
+            if (!process.Start())
+                throw new InvalidOperationException("Failed to start Python process.");
+        }
+        catch
+        {
+            process.Dispose();
+            throw;
         }
 
-        _activeProcesses[process.Id] = process;
+        var processId = process.Id;
+        _activeProcesses[processId] = process;
 
         process.Exited += (_, _) =>
         {
-            _activeProcesses.TryRemove(process.Id, out _);
+            _activeProcesses.TryRemove(processId, out _);
         };
+        // Very short-lived failures may exit before the event handler was attached.
+        if (process.HasExited)
+            _activeProcesses.TryRemove(processId, out _);
 
         return process;
     }

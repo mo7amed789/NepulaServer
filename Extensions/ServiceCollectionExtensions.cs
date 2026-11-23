@@ -76,7 +76,6 @@ namespace NebulaServer.Extensions
             services.AddSingleton<JobStore>();
             services.AddSingleton<PlaylistEventBus>();
             services.AddSingleton<StreamingTransferService>();
-            services.AddSingleton<SystemBootstrapper>();
             services.AddSingleton<RecoveryBoot>();
             services.AddSingleton<RecoveryStateService>();
             services.AddSingleton<PairingFileService>();
@@ -88,6 +87,7 @@ namespace NebulaServer.Extensions
             services.AddSingleton<ServerStateFileService>();
             services.AddSingleton<LicenseService>();
             services.AddSingleton<ServerInfoHostedService>();
+            services.AddHostedService<CoreLifecycleService>();
 
             return services;
         }

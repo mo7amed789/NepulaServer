@@ -19,4 +19,6 @@ public sealed class JobSnapshot
     public string TransferJson { get; set; } = string.Empty;
 
     public string ThumbnailUrl { get; set; } = string.Empty;
+
+    public string Title { get; set; } = string.Empty;
 }

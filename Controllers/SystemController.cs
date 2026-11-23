@@ -156,7 +156,7 @@ public sealed class SystemController : ControllerBase
     [HttpGet("api/system/show")]
     public IActionResult ShowWindow()
     {
-        Program.RequestShowWindow();
+        NebulaServer.Desktop.DesktopApplication.RequestShowWindow();
         return Ok(new { success = true, message = "Window show requested" });
     }
 }

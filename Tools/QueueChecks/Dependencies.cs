@@ -16,6 +16,12 @@ namespace NebulaServer.Helpers
 
 namespace NebulaServer.Services
 {
+    public sealed class PreviewData
+    {
+        public string Title { get; set; } = string.Empty;
+        public string ThumbnailUrl { get; set; } = string.Empty;
+    }
+
     public sealed class StorageService
     {
         public static string NormalizeInputUrl(string url) => url.Trim();

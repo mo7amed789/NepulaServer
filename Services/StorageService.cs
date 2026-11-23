@@ -438,6 +438,8 @@ public class StorageService
             startInfo.Environment["PYTHONUNBUFFERED"] = "1";
             startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
             startInfo.Environment["PYTHONUTF8"] = "1";
+            foreach (var proxyName in new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy" })
+                startInfo.Environment.Remove(proxyName);
 
             if (!string.IsNullOrWhiteSpace(bundledSitePackages) && Directory.Exists(bundledSitePackages))
             {
@@ -695,9 +697,9 @@ public class StorageService
                 AutomaticDecompression = System.Net.DecompressionMethods.All
             };
 
-            if (!string.IsNullOrWhiteSpace(proxy) && Uri.TryCreate(proxy, UriKind.Absolute, out var proxyUri))
+            if (!string.IsNullOrWhiteSpace(proxy) && ProxyAddress.TryNormalize(proxy, out var normalizedProxy))
             {
-                handler.Proxy = new System.Net.WebProxy(proxyUri);
+                handler.Proxy = ProxyAddress.CreateWebProxy(normalizedProxy!);
                 handler.UseProxy = true;
             }
 

@@ -141,6 +141,45 @@ class MediaIntegrationTests(unittest.TestCase):
             self.assertTrue(opts["force_keyframes_at_cuts"])
             self.assertIn("download_ranges", opts)
 
+    def test_user_proxy_is_applied_to_ytdlp_options(self):
+        opts = engine._make_ytdlp_opts("proxy", {
+            "Url": "https://example.com/video",
+            "Proxy": " http://proxy.example:8080 ",
+        }, self.work, FFMPEG, False)
+        self.assertEqual(opts["proxy"], "http://proxy.example:8080")
+
+    def test_ytdlp_keeps_partial_files_and_continues_downloads(self):
+        opts = engine._make_ytdlp_opts("resume", {
+            "Url": "https://example.com/video",
+        }, self.work, FFMPEG, False)
+        self.assertTrue(opts["continuedl"])
+        self.assertFalse(opts["nopart"])
+        self.assertFalse(opts["overwrites"])
+        self.assertGreaterEqual(opts["retries"], 1)
+        self.assertGreaterEqual(opts["fragment_retries"], 1)
+
+    def test_resumable_http_appends_existing_partial_file(self):
+        target = self.work / "resume.bin"
+        part = target.with_suffix(".bin.part")
+        part.write_bytes(b"partial-")
+
+        class Response:
+            status_code = 206
+            headers = {"content-length": "7"}
+
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def raise_for_status(self): pass
+            def iter_content(self, chunk_size): yield b"content"
+
+        with patch.object(engine.requests, "get") as get:
+            get.return_value = Response()
+            engine._download_resumable_http(
+                "https://example.com/file", target,
+                {"stream": True, "timeout": 5}, "resume-test", "Test download")
+            self.assertEqual(target.read_bytes(), b"partial-content")
+            self.assertEqual(get.call_args.kwargs["headers"]["Range"], "bytes=8-")
+
     def test_fallback_trim_and_precise_cut(self):
         source = self.work / "long.mp4"
         ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=8",

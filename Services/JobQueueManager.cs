@@ -16,6 +16,7 @@ using System.Globalization;
 using System.Security.Cryptography; 
 using NebulaServer.Helpers;
 using NebulaServer.Services.Jobs;
+using System.Threading.Channels;
 
 namespace NebulaServer.Services;
 
@@ -38,14 +39,19 @@ public class JobQueueManager : BackgroundService
     private readonly PlaylistEventBus _playlistEventBus;
 
     private readonly ConcurrentDictionary<string, DownloadJob> _jobs = new();
-    private readonly Queue<string> _queue = new();
+    private readonly Channel<string> _queue = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
+    {
+        SingleReader = false,
+        SingleWriter = false,
+        AllowSynchronousContinuations = false
+    });
 
     // تتبع الـ Tokens لكل مهمة للتمكن من إيقافها
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _activeJobTokens = new();
 
     private DateTime _lastCleanupUtc = DateTime.MinValue;
-    private readonly SemaphoreSlim _workerSemaphore;
-    private readonly SemaphoreSlim _queueSignal = new(0);
+    private readonly int _workerCount;
+    private readonly bool _keepDownloads;
     private static readonly object ConsoleOutputLock = new();
     private readonly ConcurrentDictionary<string, double> _lastConsolePercent = new();
 
@@ -64,23 +70,23 @@ public class JobQueueManager : BackgroundService
         _dashboardEvents = dashboardEvents;
         _jobStore = jobStore;
         _playlistEventBus = playlistEventBus;
+        _keepDownloads = configuration.GetValue("Storage:KeepDownloads", false);
 
         // Media downloads are network-bound. Keep enough workers active to
         // use fast connections without allowing an unbounded queue to thrash
         // CPU, disk, or the upstream provider.
         var defaultWorkers = Environment.ProcessorCount >= 8 ? 4 : 3;
-        var workerCount = Math.Clamp(
+        _workerCount = Math.Clamp(
             configuration.GetValue("Performance:MaxConcurrentDownloads", defaultWorkers),
             1,
             8);
-        _workerSemaphore = new SemaphoreSlim(workerCount, workerCount);
     }
 
     // =========================================================================
     // Public API
     // =========================================================================
 
-    public DownloadJob CreateJob(JobRequest request)
+    public DownloadJob CreateJob(JobRequest request, PreviewData? preview = null)
     {
         if (!string.IsNullOrWhiteSpace(request.Url))
         {
@@ -91,19 +97,20 @@ public class JobQueueManager : BackgroundService
         {
             Request = request,
             Message = request.IsPlaylist ? "Playlist job queued" : "Job queued",
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            OriginalTitle = preview?.Title ?? string.Empty,
+            ThumbnailUrl = preview?.ThumbnailUrl ?? string.Empty
         };
 
         _jobs[job.JobId] = job;
-        lock (_queue) { _queue.Enqueue(job.JobId); }
-        _queueSignal.Release();
         PersistJob(job);
+        _queue.Writer.TryWrite(job.JobId);
 
         _logger.LogInformation(
             "Queued job {JobId}. Playlist: {IsPlaylist}, Format: {Format}, ExtractVocals: {ExtractVocals}",
             job.JobId, request.IsPlaylist, request.Format, request.ExtractVocals);
 
-        _ = Task.Run(() => _dashboardEvents.JobProgress(job));
+        _ = NotifyJobProgressAsync(job);
 
         return job;
     }
@@ -136,10 +143,7 @@ public class JobQueueManager : BackgroundService
             }
         }
 
-        lock (_queue)
-        {
-            _queue.Clear();
-        }
+        while (_queue.Reader.TryRead(out _)) { }
     }
 
     public void RestoreJob(DownloadJob job)
@@ -151,11 +155,10 @@ public class JobQueueManager : BackgroundService
         job.Message ??= "Recovered after restart";
 
         _jobs[job.JobId] = job;
-        lock (_queue) { _queue.Enqueue(job.JobId); }
-        _queueSignal.Release();
         PersistJob(job);
+        _queue.Writer.TryWrite(job.JobId);
 
-        _ = Task.Run(() => _dashboardEvents.JobProgress(job));
+        _ = NotifyJobProgressAsync(job);
     }
 
     public void RestoreTransferState(DownloadJob job, TransferSnapshot snapshot)
@@ -222,27 +225,26 @@ public class JobQueueManager : BackgroundService
         _logger.LogWarning("Cancel requested for job {JobId}", jobId);
         if (!_jobs.TryGetValue(jobId, out var job)) return false;
 
-        // إذا كانت المهمة قيد التشغيل حالياً، نرسل أمر الإلغاء للـ Token
-        if (_activeJobTokens.TryGetValue(jobId, out var cts))
+        // Serialize dequeue/start with cancellation so a queued job cannot begin
+        // after the API reports it canceled.
+        lock (job.PlaylistLock)
         {
-            _logger.LogWarning("Cancelling token for job {JobId}", jobId);
-            cts.Cancel();
-            return true;
-        }
+            if (_activeJobTokens.TryGetValue(jobId, out var cts))
+            {
+                _logger.LogWarning("Cancelling token for job {JobId}", jobId);
+                try { cts.Cancel(); }
+                catch (ObjectDisposedException) { return false; }
+                return true;
+            }
 
-        // إذا كانت المهمة في الطابور ولم تبدأ بعد
-        if (job.State == JobState.QUEUED)
-        {
+            if (job.State != JobState.QUEUED) return false;
             job.State = JobState.CANCELED;
             job.Message = "Canceled before starting";
-            PersistJob(job);
-            await _dashboardEvents.JobProgress(job);
-
-            _jobs.TryRemove(jobId, out _);
-            return true;
         }
-
-        return false;
+        PersistJob(job);
+        await _dashboardEvents.JobProgress(job);
+        _jobs.TryRemove(jobId, out _);
+        return true;
     }
 
     // =========================================================================
@@ -253,45 +255,54 @@ public class JobQueueManager : BackgroundService
     {
         try
         {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                RunScheduledCleanup();
-
-                string? nextJob = null;
-
-                lock (_queue)
-                {
-                    if (_queue.Count > 0)
-                        nextJob = _queue.Dequeue();
-                }
-
-                if (nextJob is null)
-                {
-                    // Wake immediately when a job is queued instead of
-                    // polling once per second.
-                    await _queueSignal.WaitAsync(stoppingToken);
-                    continue;
-                }
-
-                await _workerSemaphore.WaitAsync(stoppingToken);
-
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await ProcessJob(nextJob, stoppingToken);
-                    }
-                    finally
-                    {
-                        _workerSemaphore.Release();
-                    }
-                }, stoppingToken);
-            }
+            // Track every worker so hosted-service shutdown awaits their process cleanup.
+            // Each reader takes a job only when it has capacity; no per-job Task.Run or
+            // separate semaphore can drift away from the number of queued items.
+            var workers = Enumerable.Range(0, _workerCount)
+                .Select(_ => RunWorkerAsync(stoppingToken));
+            await Task.WhenAll(workers.Append(RunCleanupAsync(stoppingToken)));
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             _logger.LogInformation("JobQueueManager stopped.");
         }
+    }
+
+    private async Task RunWorkerAsync(CancellationToken token)
+    {
+        await foreach (var jobId in _queue.Reader.ReadAllAsync(token))
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                await ProcessJob(jobId, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // A notification failure must not silently remove one worker forever.
+                _logger.LogError(ex, "Job worker failed for {JobId}.", jobId);
+            }
+        }
+    }
+
+    private async Task RunCleanupAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(CleanupInterval);
+        do
+        {
+            RunScheduledCleanup();
+        }
+        while (await timer.WaitForNextTickAsync(token));
+    }
+
+    private async Task NotifyJobProgressAsync(DownloadJob job)
+    {
+        try { await _dashboardEvents.JobProgress(job); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Unable to broadcast job {JobId}.", job.JobId); }
     }
     // =========================================================================
     // Job execution
@@ -304,12 +315,17 @@ public class JobQueueManager : BackgroundService
 
         // إنشاء Token خاص بهذه المهمة وربطه بالـ Token العام للخادم
         using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(globalToken);
-        _activeJobTokens[jobId] = jobCts;
+        lock (job.PlaylistLock)
+        {
+            if (job.State != JobState.QUEUED) return;
+            _activeJobTokens[jobId] = jobCts;
+            job.State = JobState.DOWNLOADING;
+        }
         var token = jobCts.Token;
 
         try
         {
-            job.State = JobState.DOWNLOADING;
+            token.ThrowIfCancellationRequested();
             job.Message = "Preparing job metadata";
             PersistJob(job);
             await _dashboardEvents.JobProgress(job);
@@ -344,8 +360,21 @@ public class JobQueueManager : BackgroundService
             var outputTask = ReadStandardOutputAsync(process, job, token);
             var errorTask = ReadStandardErrorAsync(process, job, errorBuffer, token);
 
-            await process.WaitForExitAsync(token);
-            await Task.WhenAll(outputTask, errorTask);
+            // Always observe both pipe readers, including cancellation, before disposing
+            // the process. Shutdown must not leave readers running against disposed handles.
+            try
+            {
+                await process.WaitForExitAsync(token);
+            }
+            finally
+            {
+                try { await Task.WhenAll(outputTask, errorTask); }
+                finally
+                {
+                    if (token.IsCancellationRequested)
+                        await process.WaitForExitAsync(CancellationToken.None);
+                }
+            }
 
             // التحقق من الفشل أو الإكمال فقط إذا لم يتم الإلغاء
             if (!token.IsCancellationRequested)
@@ -457,6 +486,7 @@ public class JobQueueManager : BackgroundService
         {
             // تنظيف الـ Token من القاموس بعد انتهاء المهمة أو إلغائها
             _activeJobTokens.TryRemove(jobId, out _);
+            _lastConsolePercent.TryRemove(jobId, out _);
         }
     }
 
@@ -475,7 +505,12 @@ public class JobQueueManager : BackgroundService
             if (line is null) break;
             if (string.IsNullOrWhiteSpace(line)) continue;
 
-            _logger.LogInformation("Python stdout [{JobId}]: {Line}", job.JobId, line);
+            // Progress is already exposed through SignalR. Avoid flushing the rolling log
+            // for every progress tick; stage/result diagnostics remain at information level.
+            if (line.Contains("JOB_PROGRESS|", StringComparison.Ordinal))
+                _logger.LogDebug("Python stdout [{JobId}]: {Line}", job.JobId, line);
+            else
+                _logger.LogInformation("Python stdout [{JobId}]: {Line}", job.JobId, line);
             await ParseEngineMessageAsync(job, line);
         }
     }
@@ -492,6 +527,10 @@ public class JobQueueManager : BackgroundService
             if (line is null) break;
             if (string.IsNullOrWhiteSpace(line)) continue;
 
+            const int maxErrorCharacters = 64 * 1024;
+            if (line.Length > maxErrorCharacters) line = line[^maxErrorCharacters..];
+            if (buffer.Length + line.Length > maxErrorCharacters)
+                buffer.Remove(0, Math.Min(buffer.Length, buffer.Length + line.Length - maxErrorCharacters));
             buffer.AppendLine(line);
             _logger.LogWarning("Python stderr [{JobId}]: {Line}", job.JobId, line);
         }
@@ -833,6 +872,7 @@ public class JobQueueManager : BackgroundService
                 RequestJson = JsonSerializer.Serialize(job.Request),
                 TransferJson = JsonSerializer.Serialize(BuildTransferSnapshot(job)),
                 ThumbnailUrl = job.ThumbnailUrl
+                ,Title = job.OriginalTitle
             });
         }
         catch (Exception ex)
@@ -879,27 +919,27 @@ public class JobQueueManager : BackgroundService
     {
         var filePath = Path.Combine(_storage.GetPlaylistDirectoryPath(job.JobId), fileName);
         var fileInfo = new FileInfo(filePath);
+        var contentHash = fileInfo.Exists ? ComputeSha256(filePath) : string.Empty;
 
         return new PlaylistItemResult
         {
-            ItemId = ComputeStableItemId(filePath, job.JobId, index),
+            ItemId = ComputeStableItemId(contentHash, job.JobId, index),
             Index = index,
             FileName = fileName,
             Title = originalTitle ?? fileName,
             State = TransferState.Ready,
             SizeBytes = fileInfo.Exists ? fileInfo.Length : 0,
-            Sha256 = fileInfo.Exists ? ComputeSha256(filePath) : string.Empty,
+            Sha256 = contentHash,
             CreatedUtc = fileInfo.Exists ? fileInfo.CreationTimeUtc : DateTime.UtcNow,
             CompletedAt = DateTime.UtcNow,
             Sequence = NextEventSequence(job)
         };
     }
 
-    private static string ComputeStableItemId(string filePath, string jobId, int index)
+    private static string ComputeStableItemId(string contentHash, string jobId, int index)
     {
-        if (File.Exists(filePath))
+        if (!string.IsNullOrEmpty(contentHash))
         {
-            var contentHash = ComputeSha256(filePath);
             var itemBytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{contentHash}:{index}"));
             return Convert.ToHexString(itemBytes).ToLowerInvariant();
         }
@@ -911,7 +951,8 @@ public class JobQueueManager : BackgroundService
 
     private static string ComputeSha256(string filePath)
     {
-        using var stream = File.OpenRead(filePath);
+        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 128 * 1024, FileOptions.SequentialScan);
         var hash = SHA256.HashData(stream);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
@@ -988,7 +1029,8 @@ public class JobQueueManager : BackgroundService
 
             _storage.CleanupExpiredArtifacts(
                 ArtifactRetention,
-                protectedIds);
+                protectedIds,
+                _keepDownloads);
 
             _storage.ProcessScheduledPlaylistDeletion();
 
@@ -1002,41 +1044,34 @@ public class JobQueueManager : BackgroundService
 
     public DownloadJob? GetCurrentJob()
     {
-        return _jobs.Values
-            .OrderByDescending(j => j.CreatedAt)
-            .FirstOrDefault(j =>
-                j.State is
-                    JobState.DOWNLOADING or
-                    JobState.PROCESSING or
-                    JobState.SEGMENTING or
-                    JobState.SEPARATING_VOCALS or
-                    JobState.MERGING_AUDIO);
+        DownloadJob? current = null;
+        foreach (var entry in _jobs)
+        {
+            var job = entry.Value;
+            if (IsRunning(job.State) && (current is null || job.CreatedAt > current.CreatedAt))
+                current = job;
+        }
+        return current;
     }
 
     public QueueStatistics GetStatistics()
     {
-        return new QueueStatistics
+        var statistics = new QueueStatistics();
+        foreach (var entry in _jobs)
         {
-            QueuedJobs = _jobs.Values.Count(j =>
-                j.State == JobState.QUEUED),
-
-            RunningJobs = _jobs.Values.Count(j =>
-                j.State is
-                    JobState.DOWNLOADING or
-                    JobState.PROCESSING or
-                    JobState.SEGMENTING or
-                    JobState.SEPARATING_VOCALS or
-                    JobState.MERGING_AUDIO),
-
-            CompletedJobs = _jobs.Values.Count(j =>
-                j.State == JobState.COMPLETED),
-
-            FailedJobs = _jobs.Values.Count(j =>
-                j.State == JobState.FAILED),
-
-            TotalJobs = _jobs.Count
-        };
+            var state = entry.Value.State;
+            statistics.TotalJobs++;
+            if (state == JobState.QUEUED) statistics.QueuedJobs++;
+            else if (IsRunning(state)) statistics.RunningJobs++;
+            else if (state == JobState.COMPLETED) statistics.CompletedJobs++;
+            else if (state == JobState.FAILED) statistics.FailedJobs++;
+        }
+        return statistics;
     }
+
+    private static bool IsRunning(JobState state) => state is
+        JobState.DOWNLOADING or JobState.PROCESSING or JobState.SEGMENTING or
+        JobState.SEPARATING_VOCALS or JobState.MERGING_AUDIO;
 
     private void TrimExpiredJobs(DateTime cutoffUtc)
     {

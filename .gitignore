@@ -5,3 +5,36 @@
 # Generated per-installation identity belongs in the application data directory.
 device_id.txt
 **/device_id.txt
+
+# Large binaries (>100MB exceeds GitHub limit)
+ffmpeg.exe
+ffprobe.exe
+**/ffmpeg.exe
+**/ffprobe.exe
+Tools/VC_redist.x86.exe
+
+# Build & Tool directories
+[Bb]in/
+[Oo]bj/
+.vs/
+Temp/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Python runtime environment & caches
+Python/*
+!Python/nebula/
+!Python/nebula_engine.py
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Android build outputs
+NebulaMobileAndroid/.gradle/
+NebulaMobileAndroid/app/build/
+NebulaMobileAndroid/local.properties
+.gradle/
+build/
+

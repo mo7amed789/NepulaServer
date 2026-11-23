@@ -252,7 +252,7 @@
 
             <div class="mode-hint" id="processingHint">
                 <span class="mode-hint-icon">⚡</span>
-                <span>Fast mode keeps compatible video untouched and uses a quick conversion only when MP4 requires it.</span>
+                <span>Fast mode keeps trim boundaries accurate with a faster encoding preset.</span>
             </div>
 
             <div class="option-grid">
@@ -299,7 +299,7 @@
 
                 <label class="checkbox-wrapper">
                     <input type="checkbox" id="fastMode" checked>
-                    <span><strong>Fast processing</strong><small>Limit re-encoding whenever possible.</small></span>
+                    <span><strong>Fast processing</strong><small>Accurate cuts with a faster encoding preset.</small></span>
                     <span class="check-badge">Recommended</span>
                 </label>
             </div>
@@ -778,7 +778,7 @@
             if (processingHint) {
                 processingHint.querySelector('span:last-child').textContent = formatSelect.value === 'mp3'
                     ? '128 kbps keeps audio clear while making the file smaller and faster to create.'
-                    : 'Fast mode keeps compatible video untouched and uses a quick conversion only when MP4 requires it.';
+                    : 'Fast mode keeps trim boundaries accurate with a faster encoding preset.';
             }
 
             if (qualitySelect.value === 'audio') {
@@ -873,30 +873,69 @@
             }
         }
 
-        async function loadPairingData() {
-            try {
-                const pairRes = await fetch('/api/pairing', { headers: { 'X-Nebula-Key': globalPairingKey } });
-                const pairData = await pairRes.json();
+        let pairingPollTimer = null;
+        let pairingRequest = null;
 
-                const stateRes = await fetch('/api/server/state', { headers: { 'X-Nebula-Key': globalPairingKey } });
-                const stateData = await stateRes.json();
-
-                globalPairingKey = pairData.pairingKey || '';
-                document.getElementById('serverId').textContent = pairData.serverId || '-';
-                document.getElementById('pairingKey').textContent = (globalPairingKey).substring(0, 15) + '...';
-
-                const badge = document.getElementById('serverBadge');
-                if (stateData.isServerRunning) {
-                    badge.innerHTML = `<div style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--success); box-shadow: 0 0 8px var(--success);"></div><span style="color: var(--success);">Connected</span>`;
-                } else {
-                    badge.innerHTML = `<div style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--danger); box-shadow: 0 0 8px var(--danger);"></div><span style="color: var(--danger);">Disconnected</span>`;
-                }
-            } catch (e) {
-                const badge = document.getElementById('serverBadge');
-                badge.innerHTML = `<div style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--danger);"></div><span style="color: var(--danger);">Error</span>`;
+        function schedulePairingPoll() {
+            clearTimeout(pairingPollTimer);
+            pairingPollTimer = null;
+            if (!document.hidden) {
+                pairingPollTimer = setTimeout(loadPairingData, 5000);
             }
         }
 
+        function setServerBadge(status) {
+            const badge = document.getElementById('serverBadge');
+            if (badge.dataset.status === status) return;
+            badge.dataset.status = status;
+            const color = status === 'Connected' ? 'var(--success)' : 'var(--danger)';
+            const dot = document.createElement('div');
+            dot.style.cssText = `width:8px;height:8px;border-radius:50%;background-color:${color};box-shadow:0 0 8px ${color};`;
+            const label = document.createElement('span');
+            label.style.color = color;
+            label.textContent = status;
+            badge.replaceChildren(dot, label);
+        }
+
+        function loadPairingData() {
+            // A slow server must not accumulate overlapping polling requests.
+            if (pairingRequest) return pairingRequest;
+            clearTimeout(pairingPollTimer);
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
+            pairingRequest = (async () => {
+                try {
+                    const options = { headers: { 'X-Nebula-Key': globalPairingKey }, signal: controller.signal };
+                    const responses = await Promise.all([
+                        fetch('/api/pairing', options),
+                        fetch('/api/server/state', options)
+                    ]);
+                    if (responses.some(response => !response.ok)) throw new Error('Server unavailable');
+                    const [pairData, stateData] = await Promise.all(responses.map(response => response.json()));
+                    globalPairingKey = pairData.pairingKey || '';
+                    document.getElementById('serverId').textContent = pairData.serverId || '-';
+                    document.getElementById('pairingKey').textContent = globalPairingKey.substring(0, 15) + '...';
+                    setServerBadge(stateData.isServerRunning ? 'Connected' : 'Disconnected');
+                } catch (_) {
+                    controller.abort();
+                    setServerBadge('Error');
+                } finally {
+                    clearTimeout(timeout);
+                    pairingRequest = null;
+                    schedulePairingPoll();
+                }
+            })();
+            return pairingRequest;
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                clearTimeout(pairingPollTimer);
+                pairingPollTimer = null;
+            } else {
+                loadPairingData();
+            }
+        });
         async function fetchVideoQualities(isAutomatic = false) {
             const urlInput = document.getElementById('videoUrl');
             if (!validateUrl(urlInput)) {
@@ -1029,6 +1068,12 @@
             const urlInput = document.getElementById('videoUrl');
             if (!validateUrl(urlInput)) {
                 showToast('Validation Error', 'A valid URL is required to start download.', 'error');
+                return;
+            }
+
+            const sourceUrl = new URL(urlInput.value.trim());
+            if (/^yt\d+\.(?:ggpht|googleusercontent)\.com$/i.test(sourceUrl.hostname)) {
+                window.location.assign('/images?url=' + encodeURIComponent(sourceUrl.href));
                 return;
             }
 
@@ -1357,7 +1402,6 @@
         restoreSavedQuality();
         enforceAudioRules();
         loadPairingData();
-        setInterval(loadPairingData, 5000);
         loadHistory();
         loadStartupApp();
         updateNotificationBellState();

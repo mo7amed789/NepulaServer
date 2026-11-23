@@ -1,6 +1,7 @@
 ﻿using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Diagnostics;
 using NebulaServer.Helpers;
 
 namespace NebulaServer.Services;
@@ -8,6 +9,9 @@ namespace NebulaServer.Services;
 public class SystemInfoService
 {
     private readonly string _idFilePath;
+    private readonly object _networkGate = new();
+    private long _lastNetworkSample;
+    private string _localIp = "127.0.0.1";
     public string DeviceId { get; private set; } = string.Empty;
     public int Port { get; }
     public string Version => "1.0.0";
@@ -20,6 +24,21 @@ public class SystemInfoService
     }
 
     public string GetLocalIpAddress()
+    {
+        lock (_networkGate)
+        {
+            var now = Stopwatch.GetTimestamp();
+            if (_lastNetworkSample == 0 ||
+                Stopwatch.GetElapsedTime(_lastNetworkSample, now) >= TimeSpan.FromSeconds(5))
+            {
+                _localIp = FindLocalIpAddress();
+                _lastNetworkSample = now;
+            }
+            return _localIp;
+        }
+    }
+
+    private static string FindLocalIpAddress()
     {
         try
         {

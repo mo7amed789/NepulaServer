@@ -14,6 +14,7 @@ class MediaInfo:
     audio_codecs: tuple[str, ...]
     duration: float | None
     has_streams: bool
+    video_fps: float | None
 
     @property
     def audio_is_aac(self) -> bool:
@@ -25,13 +26,28 @@ def _probe_cached(ffprobe: str, path: str, size: int, modified: int, created: in
     # The stat fields form the cache key. Replaced/modified files are probed again.
     result = subprocess.run(
         [ffprobe, "-v", "error", "-show_entries",
-         "format=duration:stream=codec_type,codec_name", "-of", "json", path],
+         "format=duration:stream=codec_type,codec_name,r_frame_rate,avg_frame_rate", "-of", "json", path],
         capture_output=True, text=True, timeout=20, check=True,
     )
     data = json.loads(result.stdout)
     streams = data.get("streams") or []
     video = next((str(stream.get("codec_name") or "").lower()
                   for stream in streams if stream.get("codec_type") == "video"), "")
+    video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
+
+    def _rate(value) -> float | None:
+        try:
+            text = str(value or "")
+            if "/" in text:
+                numerator, denominator = text.split("/", 1)
+                rate = float(numerator) / float(denominator)
+            else:
+                rate = float(text)
+            return rate if math.isfinite(rate) and rate > 0 else None
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+
+    video_fps = _rate(video_stream.get("avg_frame_rate")) or _rate(video_stream.get("r_frame_rate"))
     audio = tuple(str(stream.get("codec_name") or "").lower()
                   for stream in streams if stream.get("codec_type") == "audio")
     try:
@@ -40,7 +56,7 @@ def _probe_cached(ffprobe: str, path: str, size: int, modified: int, created: in
             duration = None
     except (TypeError, ValueError):
         duration = None
-    return MediaInfo(video, audio, duration, bool(streams))
+    return MediaInfo(video, audio, duration, bool(streams), video_fps)
 
 
 def probe_media(source: str | Path, ffprobe: str) -> MediaInfo | None:

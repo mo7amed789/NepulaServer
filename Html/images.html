@@ -237,7 +237,7 @@
                 <div>
                     <span class="section-kicker">ADD SOURCES</span>
                     <h2 class="card-title">Build your download queue</h2>
-                    <p class="section-description">Direct image links and supported social posts are detected automatically.</p>
+                    <p class="section-description">Supports YouTube post-image links, direct images, and social posts. YouTube image links use the original size when available.</p>
                 </div>
             </div>
             <div class="form-group">
@@ -459,6 +459,7 @@
                 osc.connect(gain);
                 gain.connect(ctx.destination);
                 osc.start(now);
+                osc.onended = () => ctx.close();
                 osc.stop(now + 0.5);
             } catch (e) {}
         }
@@ -489,43 +490,48 @@
                 throw new Error('No images found on this page.');
             }
             
-            // Download every distinct candidate. This is what makes carousel
-            // posts and TikTok photo posts behave as a complete post download.
-            let downloaded = 0;
+            // Bound network and blob-memory pressure while keeping original files
+            // and deterministic carousel ordering, even when requests finish out of order.
             const seen = new Set();
-            for (const [index, image] of result.images.entries()) {
-                if (!image.url || seen.has(image.url)) continue;
+            const candidates = [...result.images.entries()].filter(([, image]) => {
+                if (!image.url || seen.has(image.url)) return false;
                 seen.add(image.url);
-
-                try {
-                    const dlResp = await fetch('/api/images/download', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'X-Nebula-Key': pairingKey },
-                        body: JSON.stringify({ Url: image.url, SourceUrl: url })
-                    });
-
-                    if (!dlResp.ok) continue;
-                    const blob = await dlResp.blob();
-                    const blobUrl = URL.createObjectURL(blob);
-                    const disp = dlResp.headers.get('content-disposition') || '';
-                    const match = disp.match(/filename\*?=(?:UTF-8''|"?)([^";]+)/i);
-                    const safeTitle = String(result.title || 'social-image').replace(/[\\/:*?"<>|]+/g, '_');
-                    const fallbackExtension = blob.type.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
-                    const name = match
-                        ? decodeURIComponent(match[1].replace(/"/g, ''))
-                        : `${safeTitle}_${index + 1}.${fallbackExtension}`;
-
-                    gallery.unshift({ name, blobUrl, originalUrl: url });
-                    downloaded++;
-                } catch (_) {
-                    // Keep downloading the remaining carousel items.
+                return true;
+            });
+            const completed = new Array(candidates.length);
+            let next = 0;
+            async function downloadWorker() {
+                while (next < candidates.length) {
+                    const position = next++;
+                    const [index, image] = candidates[position];
+                    try {
+                        const dlResp = await fetch('/api/images/download', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-Nebula-Key': pairingKey },
+                            body: JSON.stringify({ Url: image.url, SourceUrl: url })
+                        });
+                        if (!dlResp.ok) continue;
+                        const blob = await dlResp.blob();
+                        const disp = dlResp.headers.get('content-disposition') || '';
+                        const match = disp.match(/filename\*?=(?:UTF-8''|"?)([^";]+)/i);
+                        const safeTitle = String(result.title || 'social-image').replace(/[\\/:*?"<>|]+/g, '_');
+                        const fallbackExtension = blob.type.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+                        let name = `${safeTitle}_${index + 1}.${fallbackExtension}`;
+                        if (match) {
+                            try { name = decodeURIComponent(match[1].replace(/"/g, '')); } catch (_) { }
+                        }
+                        completed[position] = { name, blobUrl: URL.createObjectURL(blob), originalUrl: url };
+                    } catch (_) {
+                        // One failed image must not cancel the rest of the post.
+                    }
                 }
             }
-
-            if (downloaded === 0) throw new Error('The post was found, but none of its images could be downloaded.');
-            return downloaded;
+            await Promise.all(Array.from({ length: Math.min(3, candidates.length) }, () => downloadWorker()));
+            const downloaded = completed.filter(Boolean);
+            if (downloaded.length === 0) throw new Error('The post was found, but none of its images could be downloaded.');
+            gallery = downloaded.reverse().concat(gallery);
+            return downloaded.length;
         }
-
         // ─── Gallery ────────────────────────────────────────────────────
         function renderGallery() {
             const grid  = document.getElementById('imgGrid');
@@ -541,7 +547,7 @@
             gallery.forEach((img, i) => {
                 const card = document.createElement('div');
                 card.className = 'img-card';
-                card.style.animationDelay = `${i * 40}ms`;
+                card.style.animationDelay = `${Math.min(i, 10) * 40}ms`;
 
                 const image = document.createElement('img');
                 image.setAttribute('src', img.blobUrl);
@@ -652,6 +658,11 @@
             }, 5000);
         }
 
+        const incomingImageUrl = new URLSearchParams(window.location.search).get('url');
+        if (incomingImageUrl) {
+            document.getElementById('imageUrl').value = incomingImageUrl;
+            addUrl();
+        }
     </script>
     <script src="/static/animations.min.js"></script>
 </body>

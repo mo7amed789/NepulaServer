@@ -61,7 +61,9 @@ public sealed class RecoveryBoot
                     Eta = string.Empty,
                     OutputFileName = snapshot.OutputPath is null ? null : Path.GetFileName(snapshot.OutputPath),
                     Message = "Recovered after restart",
-                    CreatedAt = snapshot.CreatedAt
+                    CreatedAt = snapshot.CreatedAt,
+                    OriginalTitle = snapshot.Title,
+                    ThumbnailUrl = snapshot.ThumbnailUrl
                 };
 
                 _queue.RestoreJob(job);

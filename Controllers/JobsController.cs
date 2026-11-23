@@ -63,7 +63,7 @@ public class JobsController : ControllerBase
             return Ok(job.CurrentProgress);
         }
 
-        var historyJob = _store.GetAllHistory().FirstOrDefault(j => j.Id == id);
+        var historyJob = _store.GetById(id);
         if (historyJob != null)
         {
             return Ok(new NebulaServer.Models.Jobs.DownloadProgress
@@ -107,27 +107,11 @@ public class JobsController : ControllerBase
     [HttpDelete("history/{id}")]
     public IActionResult DeleteHistory(string id)
     {
-        var historyJob = _store.GetAllHistory().FirstOrDefault(j => j.Id == id);
-        if (historyJob != null && !string.IsNullOrWhiteSpace(historyJob.OutputPath))
-        {
-            try
-            {
-                var fileName = Path.GetFileName(historyJob.OutputPath);
-                var filePath = _storage.GetDownloadFilePath(fileName);
-                if (System.IO.File.Exists(filePath))
-                {
-                    System.IO.File.Delete(filePath);
-                }
-                else if (System.IO.File.Exists(historyJob.OutputPath))
-                {
-                    System.IO.File.Delete(historyJob.OutputPath);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to delete physical file for history job {JobId}", id);
-            }
-        }
+        var historyJob = _store.GetById(id);
+        if (historyJob is null) return NotFound(new { error = "History item not found" });
+        if (historyJob.Status is not ("COMPLETED" or "FAILED" or "CANCELED"))
+            return Conflict(new { error = "Active downloads cannot be deleted from history" });
+
         _jobs.RemoveJob(id);
         _store.DeleteJob(id);
         return Ok();
@@ -139,40 +123,31 @@ public class JobsController : ControllerBase
         var history = _store.GetAllHistory();
         foreach (var historyJob in history)
         {
-            if (!string.IsNullOrWhiteSpace(historyJob.OutputPath))
-            {
-                try
-                {
-                    var fileName = Path.GetFileName(historyJob.OutputPath);
-                    var filePath = _storage.GetDownloadFilePath(fileName);
-                    if (System.IO.File.Exists(filePath))
-                    {
-                        System.IO.File.Delete(filePath);
-                    }
-                    else if (System.IO.File.Exists(historyJob.OutputPath))
-                    {
-                        System.IO.File.Delete(historyJob.OutputPath);
-                    }
-                }
-                catch { }
-            }
-            _jobs.RemoveJob(historyJob.Id);
+            if (historyJob.Status is "COMPLETED" or "FAILED" or "CANCELED")
+                _jobs.RemoveJob(historyJob.Id);
         }
         _store.ClearHistory();
         return Ok();
     }
 
     [HttpGet("thumbnail-proxy")]
-    public async Task<IActionResult> DownloadThumbnailProxy([FromQuery] string url)
+    public async Task<IActionResult> DownloadThumbnailProxy([FromQuery] string url, [FromQuery] string? proxy = null)
     {
         if (string.IsNullOrWhiteSpace(url)) return BadRequest();
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
             return BadRequest("Invalid URL scheme.");
+        if (!ProxyAddress.TryNormalize(proxy, out var normalizedProxy))
+            return BadRequest("Proxy must be a valid HTTP or HTTPS URL.");
 
         try
         {
             await SafeOutboundHttp.EnsureSafeUriAsync(uri, HttpContext.RequestAborted);
-            var client = _httpClientFactory.CreateClient("ImageDownloaderClient");
+            using var handler = string.IsNullOrWhiteSpace(normalizedProxy)
+                ? null
+                : new HttpClientHandler { Proxy = ProxyAddress.CreateWebProxy(normalizedProxy), UseProxy = true };
+            using var client = handler is null
+                ? _httpClientFactory.CreateClient("ImageDownloaderClient")
+                : new System.Net.Http.HttpClient(handler);
             using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, uri);
             var response = await client.SendAsync(
                 request,
@@ -234,6 +209,9 @@ public class JobsController : ControllerBase
         {
             return BadRequest("A valid HTTP or HTTPS URL is required.");
         }
+        if (!ProxyAddress.TryNormalize(request.Proxy, out var normalizedProxy))
+            return BadRequest("Proxy must be a valid HTTP or HTTPS URL.");
+        request.Proxy = normalizedProxy;
 
         var job = _jobs.CreateJob(request);
 
@@ -364,7 +342,7 @@ public class JobsController : ControllerBase
 
         if (job == null)
         {
-            historyJob = _store.GetAllHistory().FirstOrDefault(j => j.Id == id);
+            historyJob = _store.GetById(id);
             if (historyJob == null) return NotFound("Job not found.");
         }
 

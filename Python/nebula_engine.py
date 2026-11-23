@@ -15,6 +15,7 @@ import threading
 import time
 import traceback
 import hashlib
+import time
 # Guard against missing package metadata (e.g. if .dist-info was stripped)
 try:
     import importlib.metadata as _meta
@@ -55,6 +56,9 @@ import requests
 import urllib.parse
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
+from nebula.encoding import _encoder_args, get_video_encoder_args
+from nebula.probe import probe_media
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -455,6 +459,13 @@ def _apply_network_identity(opts: dict, request: dict, job_id: str | None = None
         opts["proxy"] = proxy
         if job_id:
             log(f"Using proxy: {proxy}", job_id)
+    else:
+        # yt-dlp otherwise inherits the machine's WinHTTP/urllib proxy. On
+        # some Windows installations that proxy is stale or malformed and
+        # produces "Tunnel connection failed: 400 No host specified" even
+        # though the user did not configure a proxy in Tanzeel. An empty
+        # yt-dlp proxy explicitly means direct connection.
+        opts["proxy"] = ""
 
     if _has_curl_cffi():
         opts["http_headers"] = {
@@ -543,112 +554,8 @@ def _pornhub_ydl_opts(base: dict) -> dict:
 # 🚀 PERFORMANCE: Measured video encoder selection with safe CPU fallback
 # =============================================================================
 
-_VIDEO_ENCODER_ARGS: dict[bool, list] = {}
-_VIDEO_ENCODER_LOCK = threading.Lock()
-
-
-def _encoder_args(encoder: str, fast_mode: bool) -> list:
-    quality = "23" if fast_mode else "19"
-    if encoder == "h264_nvenc":
-        if fast_mode:
-            return [
-                "-c:v", encoder, "-preset", "p1", "-tune", "ull",
-                "-rc", "constqp", "-qp", quality, "-pix_fmt", "yuv420p",
-            ]
-        return [
-            "-c:v", encoder, "-preset", "p4", "-rc", "vbr",
-            "-cq", quality, "-pix_fmt", "yuv420p",
-        ]
-    if encoder == "h264_qsv":
-        return [
-            "-c:v", encoder,
-            "-preset", "veryfast" if fast_mode else "medium",
-            "-global_quality", quality,
-            "-look_ahead", "0",
-            "-pix_fmt", "yuv420p",
-        ]
-    if encoder == "h264_amf":
-        return [
-            "-c:v", encoder,
-            "-quality", "speed" if fast_mode else "balanced",
-            "-rc", "cqp",
-            "-qp_i", quality,
-            "-qp_p", quality,
-            "-pix_fmt", "yuv420p",
-        ]
-    return [
-        "-c:v", "libx264",
-        "-preset", "ultrafast" if fast_mode else "veryfast",
-        "-crf", quality,
-        "-pix_fmt", "yuv420p",
-    ]
-
-
-def _benchmark_encoder(ffmpeg: str, encoder: str, fast_mode: bool) -> float | None:
-    """Measure a real short encode; an encoder listing alone does not prove it works."""
-    command = [
-        ffmpeg, "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30:d=0.75",
-        "-frames:v", "23", "-an",
-        *_encoder_args(encoder, fast_mode),
-        "-f", "null", "-",
-    ]
-    started = time.perf_counter()
-    try:
-        result = subprocess.run(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            return None
-        return time.perf_counter() - started
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
 def _get_video_encoder_args(ffmpeg: str, fast_mode: bool = False) -> list:
-    global _VIDEO_ENCODER_ARGS
-    with _VIDEO_ENCODER_LOCK:
-        if fast_mode in _VIDEO_ENCODER_ARGS:
-            return _VIDEO_ENCODER_ARGS[fast_mode]
-
-        listed_encoders = {"libx264"}
-        try:
-            result = subprocess.run(
-                [ffmpeg, "-hide_banner", "-encoders"],
-                capture_output=True, text=True, timeout=10,
-            )
-            listed_encoders.update(
-                re.findall(
-                    r"(?m)^\s*[A-Z.]{6}\s+(h264_(?:nvenc|qsv|amf))\s",
-                    result.stdout,
-                )
-            )
-        except Exception:
-            pass
-
-        # FFmpeg may list GPU encoders that cannot start because the matching
-        # GPU or driver is absent. Benchmark only listed candidates and choose
-        # the fastest working path for this machine instead of assuming a GPU
-        # is always faster than x264 ultrafast.
-        timings: list[tuple[float, str]] = []
-        for encoder in ("h264_nvenc", "h264_qsv", "h264_amf", "libx264"):
-            if encoder not in listed_encoders:
-                continue
-            elapsed = _benchmark_encoder(ffmpeg, encoder, fast_mode)
-            if elapsed is not None:
-                timings.append((elapsed, encoder))
-                log(f"Encoder benchmark {encoder}: {elapsed:.3f}s")
-
-        selected = min(timings)[1] if timings else "libx264"
-        encoder_args = _encoder_args(selected, fast_mode)
-        log(f"Selected {selected} for {'fast' if fast_mode else 'quality'} video encoding.")
-
-        _VIDEO_ENCODER_ARGS[fast_mode] = encoder_args
-        return encoder_args
+    return get_video_encoder_args(ffmpeg, fast_mode, log)
 
 
 # =============================================================================
@@ -704,6 +611,12 @@ def _parse_quality_height(value) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _parse_quality_fps(value) -> int | None:
+    """Return an optional requested frame-rate preference from a UI label."""
+    match = re.search(r"(?:·|@|\s)(50|60)\s*fps\b", str(value or "").lower())
+    return int(match.group(1)) if match else None
+
+
 def _make_ytdlp_opts(
     job_id     : str,
     request    : dict,
@@ -713,6 +626,8 @@ def _make_ytdlp_opts(
 ) -> dict:
     fmt     = str(request.get("Format", "mp4")).lower()
     quality = str(request.get("Quality", "720") or "720")
+    fps     = _parse_quality_fps(quality)
+    data_saver = bool(request.get("DataSaverMode"))
 
     if is_playlist:
         outtmpl = str(raw_dir / "%(playlist_index)02d_%(id)s.%(ext)s")
@@ -724,9 +639,11 @@ def _make_ytdlp_opts(
         "outtmpl": outtmpl,
         "windowsfilenames": True,
         "trim_filenames": 180,
-        "retries": 10,
-        "fragment_retries": 10,
+        "retries": 5,
+        "fragment_retries": 5,
         "continuedl": True,
+        "overwrites": False,
+        "file_access_retries": 3,
         # Keep incomplete transfers in a .part file.  With nopart=True an
         # interrupted request can leave a tiny, apparently-complete MP4 that
         # is then picked up by the processing pipeline.
@@ -738,13 +655,27 @@ def _make_ytdlp_opts(
         "noplaylist": not is_playlist,
         # Parallel fragments improve throughput on fast connections. Keep
         # both values configurable for slower networks and provider limits.
-        "concurrent_fragment_downloads": max(1, min(32, int(os.environ.get("NEBULA_FRAGMENT_DOWNLOADS", "16")))),
-        "http_chunk_size": max(0, int(os.environ.get("NEBULA_HTTP_CHUNK_SIZE", str(10 * 1024 * 1024)))),
+        # Ultra-performance defaults: DASH fragments are independent, so
+        # parallel requests and a larger chunk window reduce wall-clock time
+        # without changing the selected stream or output quality.
+        "concurrent_fragment_downloads": (
+            max(1, min(48, int(os.environ.get("NEBULA_FRAGMENT_DOWNLOADS", "32"))))
+            if not data_saver else 4
+        ),
+        "http_chunk_size": (
+            max(0, int(os.environ.get("NEBULA_HTTP_CHUNK_SIZE", str(16 * 1024 * 1024))))
+            if not data_saver else 0
+        ),
+        "buffersize": 1024 * 1024 if not data_saver else 256 * 1024,
         "js_runtimes": {"node": {}},
         "remote_components": ["ejs:github"],
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios", "web"],
+                # VisionOS currently exposes YouTube's direct 50/60 FPS
+                # formats reliably. Android/iOS clients can advertise SABR
+                # entries without URLs, causing valid HD formats to appear
+                # unavailable to yt-dlp.
+                "player_client": ["visionos", "web"],
             }
         },
     }
@@ -757,6 +688,11 @@ def _make_ytdlp_opts(
         end   = parse_time(request.get("SegmentEnd"))
         effective_end = end if end is not None else float("inf")
         opts["download_ranges"] = download_range_func(None, [(start, effective_end)])
+        # A trim must be frame accurate at both boundaries. yt-dlp's external
+        # FFmpeg downloader otherwise adds `-c copy`, which seeks to the nearest
+        # keyframe and leaks frames before the requested start. FastMode still
+        # uses the faster encoding preset below, but never sacrifices cut
+        # accuracy.
         opts["force_keyframes_at_cuts"] = True
         log(f"Restricting download to segment {start}-{'end of video' if end is None else effective_end} seconds.", job_id)
 
@@ -780,6 +716,12 @@ def _make_ytdlp_opts(
         }]
     else:
         height = _parse_quality_height(quality)
+        if data_saver:
+            # Data Saver is a real bandwidth policy: cap video at 480p and
+            # prefer a <=96 kbps audio stream. Explicit high-FPS selections
+            # remain respected when that source exists.
+            height = min(height or 480, 480)
+            log("Data Saver enabled: capping video at 480p and audio at 96 kbps.", job_id)
         if height:
             # Keep every fallback capped. An uncapped fallback would let
             # yt-dlp return a higher stream when a site exposes only progressive
@@ -794,13 +736,25 @@ def _make_ytdlp_opts(
             # dimension. Prefer a strict cap on either dimension, then use the
             # smallest real video only when a platform exposes no stream under
             # the requested cap (otherwise 480p TikToks fail outright).
+            fps_filter = f"[fps>={fps}]" if fps else ""
+            # Prefer the requested 50/60 fps stream at the chosen HD height.
+            # High-frame-rate presets intentionally do not fall back to 30 fps;
+            # yt-dlp will report a clear unavailable-format error instead.
+            audio_selector = "bestaudio[abr<=96]" if data_saver else "bestaudio"
             opts["format"] = (
-                f"bestvideo[height<={height}]+bestaudio/"
-                f"best[height<={height}]/"
-                f"bestvideo[width<={height}]+bestaudio/"
-                f"best[width<={height}]/"
-                f"worstvideo[width>0]+bestaudio/"
-                f"worst[width>0]"
+                f"bestvideo[height<={height}]{fps_filter}+{audio_selector}/"
+                f"best[height<={height}]{fps_filter}/"
+                f"bestvideo[width<={height}]{fps_filter}+{audio_selector}/"
+                f"best[width<={height}]{fps_filter}/"
+                + (
+                    f"bestvideo[height<={height}]+{audio_selector}/"
+                    f"best[height<={height}]/"
+                    f"bestvideo[width<={height}]+{audio_selector}/"
+                    f"best[width<={height}]/"
+                    f"worstvideo[width>0]+bestaudio/"
+                    f"worst[width>0]"
+                    if not fps else ""
+                )
             )
         else:
             # "best" / "Original" / unknown → best available, no height cap.
@@ -820,25 +774,61 @@ def _is_valid_media_file(path: Path) -> bool:
         if path.suffix.lower() not in media_exts:
             return True
 
-        ffprobe = str(FFPROBE_BIN) if FFPROBE_BIN.exists() else shutil.which("ffprobe") or "ffprobe"
-        probe = subprocess.run(
-            [
-                ffprobe, "-v", "error",
-                "-show_entries", "format=duration:stream=codec_type",
-                "-of", "json", str(path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if probe.returncode != 0:
-            return False
-        data = json.loads(probe.stdout or "{}")
-        streams = data.get("streams") or []
-        duration = float((data.get("format") or {}).get("duration") or 0)
-        return bool(streams) and duration > 0
+        media = _probe_media(path)
+        return media is not None and media.has_streams and media.duration is not None
     except Exception:
         return False
+
+
+def _download_resumable_http(
+    url: str,
+    out_file: Path,
+    request_kwargs: dict,
+    job_id: str,
+    label: str,
+) -> None:
+    """Download to .part and resume it with HTTP Range when supported."""
+    part_file = out_file.with_suffix(out_file.suffix + ".part")
+    part_file.parent.mkdir(parents=True, exist_ok=True)
+    last_error: Exception | None = None
+
+    for attempt in range(1, 6):
+        offset = part_file.stat().st_size if part_file.exists() else 0
+        kwargs = dict(request_kwargs)
+        headers = dict(kwargs.get("headers") or {})
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        kwargs["headers"] = headers
+
+        try:
+            with requests.get(url, **kwargs) as response:
+                response.raise_for_status()
+                append = offset > 0 and response.status_code == 206
+                if offset and not append:
+                    offset = 0
+                mode = "ab" if append else "wb"
+                total = int(response.headers.get("content-length", 0)) + offset
+                downloaded = offset
+                with part_file.open(mode) as stream:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            stream.write(chunk)
+                            downloaded += len(chunk)
+                            if total:
+                                send_progress(job_id, f"{downloaded / total * 100:.1f}%", "", "")
+            os.replace(part_file, out_file)
+            return
+        except (requests.RequestException, OSError) as exc:
+            last_error = exc
+            log(
+                f"{label} attempt {attempt}/5 failed; partial data preserved at {part_file}: {exc}",
+                job_id,
+                level="WARN",
+            )
+            if attempt < 5:
+                time.sleep(min(2 ** (attempt - 1), 8))
+
+    raise RuntimeError(f"{label} failed after retries; partial data was preserved.") from last_error
 
 
 def _collect_files(raw_dir: Path, ext: str, validate: bool = False) -> list:
@@ -861,7 +851,32 @@ def _collect_files(raw_dir: Path, ext: str, validate: bool = False) -> list:
     return matches
 
 
-def _download_instagram_fallback(url: str, raw_dir: Path, job_id: str) -> dict | None:
+def _mux_orphan_audio(raw_dir: Path, ffmpeg: str, job_id: str) -> None:
+    """Recover audio left beside a video when a segmented merge was incomplete."""
+    videos = [p for p in raw_dir.rglob("*.mp4") if p.is_file()]
+    audios = [p for p in raw_dir.rglob("*") if p.is_file() and p.suffix.lower() in {".m4a", ".webm", ".opus", ".mp3"}]
+    if not videos or not audios:
+        return
+    for video in videos:
+        media = _probe_media(video)
+        if media and media.audio_codecs:
+            continue
+        audio = min(audios, key=lambda p: abs(p.stat().st_size - video.stat().st_size))
+        merged = video.with_name(f"{video.stem}_with_audio.mp4")
+        run_command([ffmpeg, "-y", "-i", str(video), "-i", str(audio),
+                     "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+                     "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart",
+                     str(merged)], job_id, "ffmpeg recover audio")
+        if merged.exists() and merged.stat().st_size > 0:
+            video.unlink(missing_ok=True)
+            merged.rename(video)
+            log(f"Recovered audio track from {audio.name}.", job_id)
+            return
+
+
+def _download_instagram_fallback(
+    url: str, raw_dir: Path, job_id: str, proxy: str | None = None
+) -> dict | None:
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -870,7 +885,10 @@ def _download_instagram_fallback(url: str, raw_dir: Path, job_id: str) -> dict |
     try:
         log(f"Attempting Instagram mobile web fallback: {url}", job_id)
         send_stage(job_id, "DOWNLOADING", "Downloading Instagram media...")
-        resp = requests.get(url, headers=headers, timeout=20)
+        request_kwargs = {"headers": headers, "timeout": 20}
+        if proxy:
+            request_kwargs["proxies"] = {"http": proxy, "https": proxy}
+        resp = requests.get(url, **request_kwargs)
         if resp.status_code != 200:
             log(f"Instagram fallback HTTP status: {resp.status_code}", job_id, level="WARN")
             return None
@@ -900,20 +918,10 @@ def _download_instagram_fallback(url: str, raw_dir: Path, job_id: str) -> dict |
             vid_url = html.unescape(video_matches[0])
             log(f"Instagram fallback found video URL: {vid_url[:80]}", job_id)
             out_file = raw_dir / f"{title}.mp4"
-            dl_resp = requests.get(vid_url, headers=headers, stream=True, timeout=30)
-            dl_resp.raise_for_status()
-            total_size = int(dl_resp.headers.get("content-length", 0))
-            downloaded = 0
-            part_file = out_file.with_suffix(out_file.suffix + ".part")
-            with open(part_file, "wb") as f:
-                for chunk in dl_resp.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            pct = f"{(downloaded / total_size) * 100:.1f}%"
-                            send_progress(job_id, pct, "", "")
-            os.replace(part_file, out_file)
+            request_kwargs = {"headers": headers, "stream": True, "timeout": 30}
+            if proxy:
+                request_kwargs["proxies"] = {"http": proxy, "https": proxy}
+            _download_resumable_http(vid_url, out_file, request_kwargs, job_id, "Instagram video")
             if not _is_valid_media_file(out_file):
                 out_file.unlink(missing_ok=True)
                 raise RuntimeError("Instagram fallback produced an invalid media file")
@@ -936,9 +944,10 @@ def _download_instagram_fallback(url: str, raw_dir: Path, job_id: str) -> dict |
             img_url = html.unescape(img_matches[0])
             log(f"Instagram fallback found image URL: {img_url[:80]}", job_id)
             out_file = raw_dir / f"{title}.jpg"
-            dl_resp = requests.get(img_url, headers=headers, timeout=30)
-            with open(out_file, "wb") as f:
-                f.write(dl_resp.content)
+            request_kwargs = {"headers": headers, "stream": True, "timeout": 30}
+            if proxy:
+                request_kwargs["proxies"] = {"http": proxy, "https": proxy}
+            _download_resumable_http(img_url, out_file, request_kwargs, job_id, "Instagram image")
             send_thumbnail(job_id, img_url)
             send_progress(job_id, "100%", "", "")
             return {
@@ -954,7 +963,9 @@ def _download_instagram_fallback(url: str, raw_dir: Path, job_id: str) -> dict |
     return None
 
 
-def _download_gallery_dl_fallback(url: str, raw_dir: Path, job_id: str) -> dict | None:
+def _download_gallery_dl_fallback(
+    url: str, raw_dir: Path, job_id: str, proxy: str | None = None
+) -> dict | None:
     try:
         log(f"Attempting gallery-dl fallback: {url}", job_id)
         send_stage(job_id, "DOWNLOADING", "Trying gallery-dl fallback...")
@@ -963,9 +974,10 @@ def _download_gallery_dl_fallback(url: str, raw_dir: Path, job_id: str) -> dict 
         cmd = [
             sys.executable, "-m", "gallery_dl",
             "--dest", str(gdl_dir),
-            "--no-part",
-            url,
         ]
+        if proxy:
+            cmd.extend(["--proxy", proxy])
+        cmd.append(url)
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         log(f"gallery-dl exit code: {res.returncode}", job_id)
         found_files = [p for p in gdl_dir.rglob("*") if p.is_file() and p.stat().st_size > 0]
@@ -997,7 +1009,9 @@ def _download_gallery_dl_fallback(url: str, raw_dir: Path, job_id: str) -> dict 
     return None
 
 
-def _download_direct_media_fallback(url: str, raw_dir: Path, job_id: str) -> dict | None:
+def _download_direct_media_fallback(
+    url: str, raw_dir: Path, job_id: str, proxy: str | None = None
+) -> dict | None:
     try:
         parsed = urllib.parse.urlparse(url)
         path_lower = parsed.path.lower()
@@ -1010,7 +1024,10 @@ def _download_direct_media_fallback(url: str, raw_dir: Path, job_id: str) -> dic
 
         if not ext_match:
             try:
-                head_resp = requests.head(url, allow_redirects=True, timeout=10)
+                request_kwargs = {"allow_redirects": True, "timeout": 10}
+                if proxy:
+                    request_kwargs["proxies"] = {"http": proxy, "https": proxy}
+                head_resp = requests.head(url, **request_kwargs)
                 ct = head_resp.headers.get("content-type", "").lower()
                 if "image/jpeg" in ct: ext_match = ".jpg"
                 elif "image/png" in ct: ext_match = ".png"
@@ -1024,14 +1041,10 @@ def _download_direct_media_fallback(url: str, raw_dir: Path, job_id: str) -> dic
             title = sanitize_filename(Path(parsed.path).stem or "media")
             out_file = raw_dir / f"{title}{ext_match}"
             send_stage(job_id, "DOWNLOADING", "Downloading direct media...")
-            dl = requests.get(url, stream=True, timeout=30)
-            dl.raise_for_status()
-            part_file = out_file.with_suffix(out_file.suffix + ".part")
-            with open(part_file, "wb") as f:
-                for chunk in dl.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-            os.replace(part_file, out_file)
+            request_kwargs = {"stream": True, "timeout": 30}
+            if proxy:
+                request_kwargs["proxies"] = {"http": proxy, "https": proxy}
+            _download_resumable_http(url, out_file, request_kwargs, job_id, "Direct media")
             if not _is_valid_media_file(out_file):
                 out_file.unlink(missing_ok=True)
                 raise RuntimeError("Direct fallback produced an invalid media file")
@@ -1047,16 +1060,17 @@ def _download_direct_media_fallback(url: str, raw_dir: Path, job_id: str) -> dic
 
 
 def _try_media_fallback(url: str, raw_dir: Path, request: dict, ffmpeg: str, job_id: str) -> dict | None:
+    proxy = _request_proxy(request)
     if _is_instagram_url(url):
-        res = _download_instagram_fallback(url, raw_dir, job_id)
+        res = _download_instagram_fallback(url, raw_dir, job_id, proxy)
         if res:
             return res
 
-    res = _download_gallery_dl_fallback(url, raw_dir, job_id)
+    res = _download_gallery_dl_fallback(url, raw_dir, job_id, proxy)
     if res:
         return res
 
-    res = _download_direct_media_fallback(url, raw_dir, job_id)
+    res = _download_direct_media_fallback(url, raw_dir, job_id, proxy)
     if res:
         return res
 
@@ -1137,6 +1151,17 @@ def download_media(job_id: str, request: dict, ffmpeg: str, raw_dir: Path) -> di
                     entries = info.get("entries") or [info]
                     first   = entries[0] or {}
 
+                    selected = first.get("requested_formats") or info.get("requested_formats") or [first]
+                    video = next((item for item in selected if item and item.get("vcodec") not in (None, "none")), first)
+                    actual_height = video.get("height")
+                    actual_fps = video.get("fps")
+                    if actual_height or actual_fps:
+                        actual_label = f"{actual_height or '?'}p"
+                        if actual_fps:
+                            actual_label += f" · {actual_fps:g} fps"
+                        send_stage(job_id, "DOWNLOADING", f"Selected source: {actual_label}")
+                        log(f"Selected source format: {actual_label}", job_id)
+
                     entry_titles = [_resolve_entry_title(e or {}, info) for e in entries]
                     title = entry_titles[0] if entry_titles else _resolve_entry_title(info)
 
@@ -1147,6 +1172,8 @@ def download_media(job_id: str, request: dict, ffmpeg: str, raw_dir: Path) -> di
                         or (thumbnails[-1].get("url") if thumbnails else None)
                     )
                     candidate_ext = "mp3" if fmt == "mp3" else "mp4"
+                    if fmt == "mp4":
+                        _mux_orphan_audio(raw_dir, ffmpeg, job_id)
                     valid_files = _collect_files(raw_dir, candidate_ext, validate=True)
                     if valid_files:
                         break
@@ -1181,6 +1208,7 @@ def download_media(job_id: str, request: dict, ffmpeg: str, raw_dir: Path) -> di
         "extension": ext,
         "title": file_title,
         "entry_titles": entry_titles,
+        "segment_applied": not is_playlist and has_segment(request),
     }
 
 
@@ -1284,19 +1312,15 @@ def has_segment(request: dict) -> bool:
 # FFmpeg helpers
 # =============================================================================
 
-def _probe_duration_seconds(source: str | Path) -> float | None:
-    """Return media duration for FFmpeg progress/ETA calculation."""
+def _probe_media(source: str | Path):
     ffprobe = str(FFPROBE_BIN) if FFPROBE_BIN.exists() else shutil.which("ffprobe") or "ffprobe"
-    try:
-        result = subprocess.run(
-            [ffprobe, "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", str(source)],
-            capture_output=True, text=True, timeout=15,
-        )
-        duration = float(result.stdout.strip())
-        return duration if duration > 0 else None
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
+    return probe_media(source, ffprobe)
+
+
+def _probe_duration_seconds(source: str | Path) -> float | None:
+    """Reuse the validation/codec probe for FFmpeg progress calculation."""
+    media = _probe_media(source)
+    return media.duration if media else None
 
 
 def run_command(command: list, job_id: str, step: str) -> None:
@@ -1321,40 +1345,49 @@ def run_command(command: list, job_id: str, step: str) -> None:
     process = subprocess.Popen(
         ffmpeg_command,
         stdout=subprocess.PIPE if is_ffmpeg else subprocess.PIPE,
-        stderr=subprocess.STDOUT if is_ffmpeg else subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="ignore",
         bufsize=1,
     )
     progress_values: dict[str, str] = {}
-    output_lines: list[str] = []
+    output_lines: deque[str] = deque(maxlen=100)
     assert process.stdout is not None
-    for line in process.stdout:
-        clean = line.strip()
-        if is_ffmpeg and "=" in clean:
-            key, value = clean.split("=", 1)
-            progress_values[key] = value
-            if key == "progress":
-                try:
-                    out_time_us = int(progress_values.get("out_time_us", "0") or 0)
-                except ValueError:
-                    out_time_us = 0
-                speed_text = progress_values.get("speed", "").rstrip("x")
-                try:
-                    speed_factor = float(speed_text)
-                except ValueError:
-                    speed_factor = 0.0
-                if duration_us:
-                    percent = min(99.9, max(0.0, out_time_us / duration_us * 100))
-                    eta = int(max(0, (duration_us - out_time_us) / 1_000_000 / speed_factor)) if speed_factor > 0 else -1
-                    send_progress(job_id, f"{percent:.1f}", f"{speed_factor:.2f}", str(eta),
-                                  "SEGMENTING" if "segment" in step.casefold() else "PROCESSING",
-                                  out_time_us, duration_us)
-                continue
-        if clean:
-            output_lines.append(clean)
-    process.wait()
+    try:
+        for line in process.stdout:
+            clean = line.strip()
+            if is_ffmpeg and "=" in clean:
+                key, value = clean.split("=", 1)
+                if key in {"out_time_us", "speed", "progress"}:
+                    progress_values[key] = value
+                if key == "progress":
+                    try:
+                        out_time_us = int(progress_values.get("out_time_us", "0") or 0)
+                    except ValueError:
+                        out_time_us = 0
+                    speed_text = progress_values.get("speed", "").rstrip("x")
+                    try:
+                        speed_factor = float(speed_text)
+                    except ValueError:
+                        speed_factor = 0.0
+                    if duration_us:
+                        percent = min(99.9, max(0.0, out_time_us / duration_us * 100))
+                        eta = int(max(0, (duration_us - out_time_us) / 1_000_000 / speed_factor)) if speed_factor > 0 else -1
+                        send_progress(job_id, f"{percent:.1f}", f"{speed_factor:.2f}", str(eta),
+                                      "SEGMENTING" if "segment" in step.casefold() else "PROCESSING",
+                                      out_time_us, duration_us)
+                    continue
+            if clean:
+                output_lines.append(clean[-4000:])
+        process.wait()
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        raise
+    finally:
+        process.stdout.close()
     output = "\n".join(output_lines)
     if output:
         log(f"{step} output: {output[-4000:]}", job_id, level="WARN" if process.returncode else "INFO")
@@ -1371,53 +1404,40 @@ def run_command(command: list, job_id: str, step: str) -> None:
 # =============================================================================
 
 def _probe_stream_codecs(src: Path) -> tuple[str, str]:
-    ffprobe = str(FFPROBE_BIN) if FFPROBE_BIN.exists() else shutil.which("ffprobe") or "ffprobe"
-    try:
-        result = subprocess.run(
-            [
-                ffprobe, "-v", "error",
-                "-show_entries", "stream=codec_type,codec_name",
-                "-of", "json",
-                str(src),
-            ],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode != 0:
-            return "", ""
-        streams = json.loads(result.stdout or "{}").get("streams") or []
-        video = next((str(s.get("codec_name") or "").casefold()
-                      for s in streams if s.get("codec_type") == "video"), "")
-        audio = next((str(s.get("codec_name") or "").casefold()
-                      for s in streams if s.get("codec_type") == "audio"), "")
-        return video, audio
-    except Exception:
+    media = _probe_media(src)
+    if media is None:
         return "", ""
-
-
-def _needs_reencode(src: Path) -> bool:
-    video_codec, _ = _probe_stream_codecs(src)
-    return video_codec not in ("h264", "")
+    return media.video_codec, media.audio_codecs[0] if media.audio_codecs else ""
 
 
 def segment_media(src: Path, dst: Path, ffmpeg: str, request: dict, job_id: str) -> None:
     fast_mode = bool(request.get("FastMode", True))
     cmd = [ffmpeg, "-y"]
+    # Put -ss after -i for accurate decoding. Input-side seeking is fast but
+    # keyframe based when packets are copied.
+    cmd += ["-i", str(src)]
     if request.get("SegmentStart"):
         cmd += ["-ss", str(request["SegmentStart"])]
-    cmd += ["-i", str(src)]
     if request.get("SegmentEnd"):
-        cmd += ["-to", str(request["SegmentEnd"])]
+        start = parse_time(request.get("SegmentStart")) or 0.0
+        cmd += ["-t", str(parse_time(request["SegmentEnd"]) - start)]
 
-    if src.suffix.lower() == ".mp3":
-        if fast_mode:
-            cmd += ["-vn", "-codec:a", "copy", str(dst)]
-        else:
-            cmd += ["-vn", "-codec:a", "libmp3lame", "-q:a", "2", str(dst)]
+    if dst.suffix.lower() == ".mp3":
+        quality = str(request.get("AudioQuality", "128") or "128")
+        if quality not in {"96", "128", "160", "192", "320"}:
+            quality = "128"
+        cmd += ["-vn", "-c:a", "libmp3lame", "-b:a", quality + "k"]
     else:
-        cmd += ["-c", "copy"]
-        if not fast_mode:
-            cmd += ["-movflags", "+faststart"]
-        cmd.append(str(dst))
+        cmd += ["-map", "0:v:0", "-map", "0:a?", "-sn", "-dn"]
+        # Re-encode the selected interval so the first decoded frame and final
+        # timestamp are exact. FastMode selects ultrafast CRF 19; quality mode
+        # uses the faster-than-default veryfast CRF 19 path.
+        cmd += _encoder_args("libx264", fast_mode)
+        cmd += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+    cmd += ["-avoid_negative_ts", "make_zero"]
+    if dst.suffix.lower() == ".mp3":
+        cmd += ["-write_xing", "0"]
+    cmd.append(str(dst))
     run_command(cmd, job_id, "ffmpeg segment")
 
 
@@ -1427,60 +1447,75 @@ def standardize_mp4(
     ffmpeg: str,
     request: dict,
     job_id: str,
-    needs_reencode: bool | None = None,
-    audio_codec: str = "",
 ) -> Path:
     fast_mode = bool(request.get("FastMode", True))
-    if needs_reencode is None:
-        needs_reencode = _needs_reencode(src)
+    media = _probe_media(src)
+    if media is None or not media.video_codec:
+        raise RuntimeError(f"Cannot read a video stream from {src.name}.")
 
-    if not needs_reencode:
-        log(f"Stream copy (already H.264): {src.name}", job_id)
-        cmd = [ffmpeg, "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a?", "-c", "copy"]
-        if not fast_mode:
-            cmd += ["-movflags", "+faststart"]
-        cmd.append(str(dst))
-    else:
-        log(f"Re-encoding (codec mismatch): {src.name}", job_id)
-        encoder_args = _get_video_encoder_args(ffmpeg, fast_mode=fast_mode)
-        audio_args = ["-c:a", "copy"] if audio_codec == "aac" else [
-            "-c:a", "aac", "-b:a", "128k" if fast_mode else "192k",
-        ]
-        cmd = [
-            ffmpeg, "-y", "-threads", "0", "-i", str(src),
+    # Decide independently for every stream type. An audio conversion should
+    # never force an already-compatible video through another lossy encode.
+    needs_reencode = media.video_codec != "h264"
+    encoder_args = (_get_video_encoder_args(ffmpeg, fast_mode=fast_mode)
+                    if needs_reencode else ["-c:v", "copy"])
+    audio_args = ["-c:a", "copy"]
+    for index, codec in enumerate(media.audio_codecs):
+        if codec != "aac":
+            audio_args += [f"-c:a:{index}", "aac", f"-b:a:{index}", "192k"]
+
+    def build_command(video_args):
+        command = [
+            ffmpeg, "-y", "-i", str(src),
             "-map", "0:v:0", "-map", "0:a?", "-sn", "-dn",
-            *encoder_args,
-            *audio_args,
+            *video_args, *audio_args,
         ]
         if not fast_mode:
-            cmd += ["-movflags", "+faststart"]
-        cmd.append(str(dst))
+            command += ["-movflags", "+faststart"]
+        return command + [str(dst)]
+
     try:
-        run_command(cmd, job_id, "ffmpeg standardize")
-        if dst.exists() and dst.stat().st_size > 0:
-            return dst
+        run_command(build_command(encoder_args), job_id, "ffmpeg standardize")
     except Exception as exc:
-        selected_encoder = encoder_args[1] if needs_reencode else "copy"
-        if needs_reencode and selected_encoder != "libx264":
-            log(f"{selected_encoder} failed; retrying with libx264: {exc}", job_id, level="WARN")
-            fallback = [
-                ffmpeg, "-y", "-threads", "0", "-i", str(src),
-                "-map", "0:v:0", "-map", "0:a?", "-sn", "-dn",
-                *_encoder_args("libx264", fast_mode),
-                *audio_args,
-            ]
-            if not fast_mode:
-                fallback += ["-movflags", "+faststart"]
-            fallback.append(str(dst))
-            try:
-                run_command(fallback, job_id, "ffmpeg standardize fallback")
-                if dst.exists() and dst.stat().st_size > 0:
-                    return dst
-            except Exception as fallback_exc:
-                log(f"Software fallback failed: {fallback_exc}", job_id, level="WARN")
-        else:
-            log(f"Standardizing failed — using original: {exc}", job_id, level="WARN")
-    return src
+        selected_encoder = encoder_args[1]
+        if not needs_reencode or selected_encoder == "libx264":
+            raise
+        log(f"{selected_encoder} failed; retrying with libx264: {exc}", job_id, level="WARN")
+        run_command(build_command(_encoder_args("libx264", fast_mode)),
+                    job_id, "ffmpeg standardize fallback")
+
+    if not dst.exists() or dst.stat().st_size == 0:
+        raise RuntimeError(f"FFmpeg did not produce {dst.name}.")
+    return dst
+
+
+def repair_mp4_audio_start(
+    src: Path,
+    dst: Path,
+    ffmpeg: str,
+    job_id: str,
+) -> Path:
+    """Repair AAC priming/negative PTS while stream-copying the video.
+
+    Some providers put AAC priming packets before t=0.  Keeping those packets
+    with a plain stream-copy can produce a short burst of static/clicking at the
+    beginning in desktop players.  Re-encode only the audio with an explicit
+    first PTS of zero; the video remains stream-copied, so this is much faster
+    than a full video encode while removing the audible glitch.
+    """
+    cmd = [
+        ffmpeg, "-y",
+        "-i", str(src),
+        "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
+        "-sn", "-dn", "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k",
+        "-af", "aresample=async=1:first_pts=0",
+        "-movflags", "+faststart",
+        str(dst),
+    ]
+    run_command(cmd, job_id, "ffmpeg normalize timestamps")
+    if not dst.exists() or dst.stat().st_size == 0:
+        raise RuntimeError(f"FFmpeg did not produce {dst.name}.")
+    return dst
 
 
 def inject_metadata(src: Path, title: str, ffmpeg: str, job_id: str) -> Path:
@@ -1604,7 +1639,8 @@ def separate_vocals(src: Path, work_dir: Path, ffmpeg: str, fmt: str, job_id: st
         return out
 
     out = work_dir / f"{src.stem}_vocals.mp4"
-    encoder_args = _get_video_encoder_args(ffmpeg)
+    video_codec, _ = _probe_stream_codecs(src)
+    encoder_args = ["-c:v", "copy"] if video_codec == "h264" else _get_video_encoder_args(ffmpeg)
     run_command(
         [
             ffmpeg, "-y", "-threads", "0",
@@ -1677,13 +1713,24 @@ def finalize(src: Path, dst: Path, job_id: str) -> Path:
 # Per-file processing pipeline
 # =============================================================================
 
-def process_file(src: Path, request: dict, ffmpeg: str, work_dir: Path, job_id: str) -> Path:
+def process_file(src: Path, request: dict, ffmpeg: str, work_dir: Path, job_id: str,
+                 *, segment_applied: bool = False) -> Path:
     if src.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".zip"):
         log(f"Static media format ({src.suffix}) — skipping video postprocessing.", job_id)
         return src
 
     fmt = str(request.get("Format", "mp4")).lower()
     cur = src
+
+    # yt-dlp range downloads are already cut. Full-file fallbacks and playlist
+    # items must be trimmed locally, before expensive conversions/AI processing.
+    if has_segment(request) and not segment_applied:
+        validate_segment(request)
+        extension = ".mp3" if fmt == "mp3" else (
+            src.suffix if request.get("FastMode", True) else ".mp4")
+        trimmed = work_dir / f"{src.stem}_trim{extension}"
+        segment_media(cur, trimmed, ffmpeg, request, job_id)
+        cur = trimmed
 
     if request.get("ExtractVocals"):
         expected_ext = ".mp3" if fmt == "mp3" else ".mp4"
@@ -1698,10 +1745,16 @@ def process_file(src: Path, request: dict, ffmpeg: str, work_dir: Path, job_id: 
         fmt == "mp4"
         and not request.get("ExtractVocals")
     ):
-        video_codec, audio_codec = _probe_stream_codecs(cur)
-        needs_reencode = video_codec not in ("h264", "")
-        if not needs_reencode:
-            log(f"Skipping ffmpeg (already optimized): {cur.name}", job_id)
+        media = _probe_media(cur)
+        if media is None or not media.video_codec:
+            raise RuntimeError(f"Cannot read a video stream from {cur.name}.")
+        if cur.suffix.lower() == ".mp4" and media.video_codec == "h264" and media.audio_is_aac:
+            normalized = work_dir / f"{cur.stem}_normalized.mp4"
+            if not (normalized.exists() and normalized.stat().st_size > 0):
+                cur = repair_mp4_audio_start(cur, normalized, ffmpeg, job_id)
+            else:
+                cur = normalized
+            log(f"Repaired AAC start while copying video: {cur.name}", job_id)
             return cur
 
         std = work_dir / f"{src.stem}_std.mp4"
@@ -1712,11 +1765,24 @@ def process_file(src: Path, request: dict, ffmpeg: str, work_dir: Path, job_id: 
                 ffmpeg,
                 request,
                 job_id,
-                needs_reencode=needs_reencode,
-                audio_codec=audio_codec,
             )
         else:
             cur = std
+
+    # A high-frame-rate preset is a hard requirement.  yt-dlp's format
+    # metadata can say 50/60 fps while a provider or a later remux produces a
+    # lower-rate file, so verify the saved stream itself before publishing it.
+    requested_fps = _parse_quality_fps(request.get("Quality"))
+    if fmt == "mp4" and requested_fps:
+        media = _probe_media(cur)
+        actual_fps = media.video_fps if media else None
+        if actual_fps is None or actual_fps + 0.5 < requested_fps:
+            actual_text = f"{actual_fps:.3g} fps" if actual_fps else "an unknown frame rate"
+            raise RuntimeError(
+                f"The selected {requested_fps} fps download produced {actual_text}. "
+                "Choose another source or quality; the app will not label it as the requested FPS."
+            )
+        log(f"Verified output frame rate: {actual_fps:.3g} fps (requested {requested_fps}).", job_id)
 
     return cur
 
@@ -2076,7 +2142,8 @@ def process_job(job: dict) -> None:
         real_title = sanitize_filename(title) if title else sanitize_filename(src.stem)
 
         log(f"Processing: {src.name} → {real_title!r}", job_id)
-        processed = process_file(src, request, ffmpeg, work_dir, job_id)
+        processed = process_file(src, request, ffmpeg, work_dir, job_id,
+                                 segment_applied=bool(dl.get("segment_applied", False)))
         if request.get("FastMode", True):
             log("Fast mode: skipping the extra metadata remux pass.", job_id)
         else:

@@ -9,6 +9,7 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <Compile Include="../../Helpers/YouTubeImageUrl.cs" Link="YouTubeImageUrl.cs" />
     <Compile Include="../../Services/ImageEngine/Extractors/DirectImageExtractor.cs" Link="DirectImageExtractor.cs" />
+    <Compile Include="../../Services/ImageEngine/ImageDownloadManager.cs" Link="ImageDownloadManager.cs" />
     <Compile Include="../../Services/ImageEngine/Extractors/IImageExtractor.cs" Link="IImageExtractor.cs" />
     <Compile Include="../../Models/ImageEngine/ImageCandidate.cs" Link="ImageCandidate.cs" />
   </ItemGroup>

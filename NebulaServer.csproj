@@ -67,7 +67,7 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
 
-    <None Update="Python\nebula_engine.py">
+    <None Update="Python\nebula\**\*.py;Python\nebula_engine.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>Always</CopyToPublishDirectory>
     </None>
@@ -167,7 +167,6 @@
 
     <!-- FIX: كانت نسخة Preview قديمة (10.0.0-preview.4) — اتحولت للنسخة المستقرة -->
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
-    <PackageReference Include="Photino.NET" Version="3.1.18" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />

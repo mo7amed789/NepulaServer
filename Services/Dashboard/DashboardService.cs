@@ -1,23 +1,16 @@
 using NebulaServer.Models.Dashboard;
 using NebulaServer.Services.Devices;
 using NebulaServer.Services.Server;
-// ?? ????? IPairingService ??? ????
-using System.Diagnostics;
 
 namespace NebulaServer.Services.Dashboard;
 
-public class DashboardService
+public sealed class DashboardService : IDisposable
 {
     private readonly ServerStateService _serverState;
     private readonly JobQueueManager _jobs;
     private readonly StorageService _storage;
-    private readonly Process _process = Process.GetCurrentProcess();
+    private readonly DashboardResourceMonitor _resources;
     private readonly DeviceRegistryService _devices;
-
-    private TimeSpan _lastCpuTime;
-    private DateTime _lastCpuCheck;
-    private double _lastCalculatedCpu;
-    private readonly object _cpuLock = new object();
 
     private readonly DateTime _startedAt = DateTime.UtcNow;
 
@@ -32,44 +25,10 @@ public class DashboardService
         _storage = storage;
         _devices = devices;
 
-        _lastCpuTime = _process.TotalProcessorTime;
-        _lastCpuCheck = DateTime.UtcNow;
-        _lastCalculatedCpu = 0;
+        _resources = new DashboardResourceMonitor(storage.DownloadsPath);
     }
 
-    private double GetCpuUsage()
-    {
-        lock (_cpuLock)
-        {
-            var now = DateTime.UtcNow;
-            var elapsedMs = (now - _lastCpuCheck).TotalMilliseconds;
-
-            if (elapsedMs > 500)
-            {
-                var cpu = _process.TotalProcessorTime;
-                var cpuUsedMs = (cpu - _lastCpuTime).TotalMilliseconds;
-
-                _lastCalculatedCpu = Math.Round(
-                    cpuUsedMs / (Environment.ProcessorCount * elapsedMs) * 100,
-                    1);
-
-                _lastCpuTime = cpu;
-                _lastCpuCheck = now;
-            }
-
-            return _lastCalculatedCpu;
-        }
-    }
-
-    private void FillPerformance(DashboardResponse response)
-    {
-        _process.Refresh();
-
-        response.Performance.CpuUsage = GetCpuUsage();
-        response.Performance.WorkingSetBytes = _process.WorkingSet64;
-        response.Performance.MemoryUsageMb =
-            Math.Round(_process.WorkingSet64 / 1024d / 1024d, 1);
-    }
+    public void Dispose() => _resources.Dispose();
 
     public DashboardResponse GetDashboard()
     {
@@ -108,11 +67,12 @@ public class DashboardService
         //---------------------------------------
         response.Storage.DownloadsFolder = _storage.DownloadsPath;
 
-        var drive = new DriveInfo(Path.GetPathRoot(_storage.DownloadsPath)!);
-        response.Storage.TotalSpaceBytes = drive.TotalSize;
-        response.Storage.FreeSpaceBytes = drive.AvailableFreeSpace;
-
-        FillPerformance(response);
+        var resources = _resources.GetSnapshot();
+        response.Storage.TotalSpaceBytes = resources.TotalSpaceBytes;
+        response.Storage.FreeSpaceBytes = resources.FreeSpaceBytes;
+        response.Performance.CpuUsage = resources.CpuUsage;
+        response.Performance.WorkingSetBytes = resources.WorkingSetBytes;
+        response.Performance.MemoryUsageMb = Math.Round(resources.WorkingSetBytes / 1024d / 1024d, 1);
 
         //---------------------------------------
         // Queue

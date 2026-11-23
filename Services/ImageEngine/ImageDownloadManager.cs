@@ -10,6 +10,7 @@ namespace NebulaServer.Services.ImageEngine;
 public sealed class ImageDownloadManager
 {
     private const long MaxImageBytes = 50 * 1024 * 1024;
+    private const int MaxDownloadAttempts = 5;
     private readonly HttpClient _httpClient;
 
     public ImageDownloadManager(IHttpClientFactory httpClientFactory)
@@ -29,24 +30,7 @@ public sealed class ImageDownloadManager
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-            if (sourcePage is not null &&
-                (sourcePage.Scheme == Uri.UriSchemeHttp || sourcePage.Scheme == Uri.UriSchemeHttps))
-            {
-                request.Headers.Referrer = sourcePage;
-            }
-
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            response.EnsureSuccessStatusCode();
-
-            if (response.Content.Headers.ContentLength is > MaxImageBytes)
-                throw new InvalidDataException("Image exceeds the 50 MB size limit.");
-
-            await using (var fileStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, true))
-            await using (var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken))
-            {
-                await CopyWithLimitAsync(contentStream, fileStream, cancellationToken);
-            }
+            await DownloadResumableAsync(uri, sourcePage, tempFilePath, cancellationToken);
 
             var extension = await DetectImageFormatAsync(tempFilePath, cancellationToken);
             if (extension is null)
@@ -63,15 +47,93 @@ public sealed class ImageDownloadManager
         }
     }
 
-    private static async Task CopyWithLimitAsync(Stream source, Stream destination, CancellationToken cancellationToken)
+    private async Task DownloadResumableAsync(
+        Uri uri,
+        Uri? sourcePage,
+        string tempFilePath,
+        CancellationToken cancellationToken)
+    {
+        Exception? lastError = null;
+
+        for (var attempt = 1; attempt <= MaxDownloadAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var existingLength = File.Exists(tempFilePath) ? new FileInfo(tempFilePath).Length : 0;
+
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+                if (existingLength > 0)
+                    request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(existingLength, null);
+                if (sourcePage is not null &&
+                    (sourcePage.Scheme == Uri.UriSchemeHttp || sourcePage.Scheme == Uri.UriSchemeHttps))
+                {
+                    request.Headers.Referrer = sourcePage;
+                }
+
+                using var response = await _httpClient.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
+
+                response.EnsureSuccessStatusCode();
+                var append = existingLength > 0 && response.StatusCode == System.Net.HttpStatusCode.PartialContent;
+                if (existingLength > 0 && !append)
+                {
+                    existingLength = 0;
+                    TryDelete(tempFilePath);
+                }
+
+                var expectedLength = response.Content.Headers.ContentRange?.Length
+                    ?? (response.Content.Headers.ContentLength is long contentLength
+                        ? contentLength + existingLength
+                        : null);
+                if (expectedLength is > MaxImageBytes)
+                    throw new InvalidDataException("Image exceeds the 50 MB size limit.");
+
+                var mode = append ? FileMode.Append : FileMode.Create;
+                await using var fileStream = new FileStream(
+                    tempFilePath, mode, FileAccess.Write, FileShare.None, 81920, true);
+                await using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                await CopyWithLimitAsync(contentStream, fileStream, existingLength, expectedLength, cancellationToken);
+                return;
+            }
+            catch (InvalidDataException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                    throw;
+
+                lastError = ex;
+                if (attempt < MaxDownloadAttempts)
+                    await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt), cancellationToken);
+            }
+        }
+
+        throw new HttpRequestException(
+            $"Image download failed after {MaxDownloadAttempts} attempts; partial data could not be completed.",
+            lastError);
+    }
+
+    private static async Task CopyWithLimitAsync(
+        Stream source,
+        Stream destination,
+        long existingLength,
+        long? expectedLength,
+        CancellationToken cancellationToken)
     {
         var buffer = new byte[81920];
-        long total = 0;
+        long total = existingLength;
         int read;
         while ((read = await source.ReadAsync(buffer.AsMemory(), cancellationToken)) > 0)
         {
             total += read;
             if (total > MaxImageBytes)
+                throw new InvalidDataException("Image exceeds the 50 MB size limit.");
+            if (expectedLength is > MaxImageBytes)
                 throw new InvalidDataException("Image exceeds the 50 MB size limit.");
             await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
         }

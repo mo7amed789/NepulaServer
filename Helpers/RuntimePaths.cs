@@ -36,10 +36,14 @@ public static class RuntimePaths
     // ProgramData
     // =========================
 
-    public static string Data =>
-        Path.Combine(
+    public static string Data => DataDirectory.Value;
+
+    private static readonly Lazy<string> DataDirectory = new(() =>
+        string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TANZEEL_DATA_DIR"))
+        ? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "Tanzeel");
+            "Tanzeel")
+        : Path.GetFullPath(Environment.GetEnvironmentVariable("TANZEEL_DATA_DIR")!));
 
     public static string Downloads =>
         Path.Combine(Data, "Downloads");
