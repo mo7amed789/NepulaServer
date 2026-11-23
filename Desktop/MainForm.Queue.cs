@@ -18,6 +18,10 @@ internal sealed partial class MainForm
     private readonly TextBox _jobDetails = new() { Multiline = true, ReadOnly = true, BorderStyle = BorderStyle.None, Dock = DockStyle.Fill, BackColor = System.Drawing.Color.White, ScrollBars = ScrollBars.Vertical };
     private readonly Label _emptyQueue = Label("Your downloads will appear here.\nChoose New download to add your first link.", 12);
     private List<QueueRow> _queueRows = new();
+    // History is only re-read from SQLite when the store revision changes;
+    // live states overlay from the in-memory queue on every refresh.
+    private List<JobSnapshot>? _historyCache;
+    private long _historyCacheRevision = -1;
     private readonly Dictionary<string, string> _lastStates = new();
     private MediaThumbnail _selectedThumbnail = null!;
     private Button _openJob = null!, _revealJob = null!, _saveJob = null!, _cancelJob = null!, _retryJob = null!, _copyUrl = null!;
@@ -95,7 +99,13 @@ internal sealed partial class MainForm
             var snapshot = await Task.Run(() =>
             {
                 var dashboard = _services.GetRequiredService<DashboardService>().GetDashboard();
-                var rows = _store.GetAllHistory().Select(saved =>
+                var revision = _store.HistoryRevision;
+                if (_historyCache is null || revision != _historyCacheRevision)
+                {
+                    _historyCache = _store.GetAllHistory();
+                    _historyCacheRevision = revision;
+                }
+                var rows = _historyCache.Select(saved =>
                 {
                     var live = _jobs.GetJob(saved.Id);
                     var title = live?.OriginalTitle;
