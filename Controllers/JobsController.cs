@@ -100,7 +100,10 @@ public class JobsController : ControllerBase
     [HttpGet("history")]
     public IActionResult GetHistory()
     {
-        var history = _store.GetAllHistory();
+        // History lists render id/url/status/title/thumbnail only. Transfer
+        // manifests are tens of KB per playlist row, so they stay out of this
+        // response; per-job progress remains available via {id}/progress.
+        var history = _store.GetHistoryWithoutTransfers();
         return Ok(history);
     }
 
