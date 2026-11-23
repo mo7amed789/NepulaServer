@@ -54,6 +54,22 @@ public class JobQueueManager : BackgroundService
     private readonly bool _keepDownloads;
     private static readonly object ConsoleOutputLock = new();
     private readonly ConcurrentDictionary<string, double> _lastConsolePercent = new();
+    // Progress lines arrive per yt-dlp hook call, which on fast connections
+    // can be many times per second. Broadcasting to SignalR clients on every
+    // line costs a full payload build (including a sorted copy of the
+    // playlist items) plus network traffic that no UI can render that fast.
+    // Coalesce broadcasts to a short interval; 100% and terminal stages
+    // always go out through the stage path.
+    private static readonly long ProgressBroadcastIntervalTicks = TimeSpan.FromMilliseconds(250).Ticks;
+    private readonly ConcurrentDictionary<string, long> _lastProgressBroadcastTicks = new();
+    // Playlist ITEM_COMPLETED messages arrive once per finished item and each
+    // one persisted the whole transfer snapshot synchronously on the pipe
+    // reader thread, stalling progress parsing while SQLite sync-writes.
+    // Coalesce intermediate snapshots; stage changes and terminal states
+    // still persist immediately, so a crash re-processes at most the last
+    // second of item completions.
+    private static readonly long ItemPersistIntervalTicks = TimeSpan.FromSeconds(1).Ticks;
+    private readonly ConcurrentDictionary<string, long> _lastItemPersistTicks = new();
 
     public JobQueueManager(
         ILogger<JobQueueManager> logger,
@@ -487,6 +503,8 @@ public class JobQueueManager : BackgroundService
             // تنظيف الـ Token من القاموس بعد انتهاء المهمة أو إلغائها
             _activeJobTokens.TryRemove(jobId, out _);
             _lastConsolePercent.TryRemove(jobId, out _);
+            _lastProgressBroadcastTicks.TryRemove(jobId, out _);
+            _lastItemPersistTicks.TryRemove(jobId, out _);
         }
     }
 
@@ -607,8 +625,11 @@ public class JobQueueManager : BackgroundService
                             job.Eta);
                     }
 
-                    await _dashboardEvents.DownloadProgressChanged(job.CurrentProgress);
-                    await _dashboardEvents.JobProgress(job);
+                    if (!Throttled(_lastProgressBroadcastTicks, job.JobId, ProgressBroadcastIntervalTicks, percent >= 100))
+                    {
+                        await _dashboardEvents.DownloadProgressChanged(job.CurrentProgress);
+                        await _dashboardEvents.JobProgress(job);
+                    }
                 }
             }
             return;
@@ -629,8 +650,10 @@ public class JobQueueManager : BackgroundService
                 if (job.Request.IsPlaylist && !string.IsNullOrWhiteSpace(details))
                 {
                     job.Message = $"Item ready: {details}";
-                    PersistJob(job);
-                    await _dashboardEvents.JobProgress(job);
+                    if (!Throttled(_lastItemPersistTicks, job.JobId, ItemPersistIntervalTicks, force: false))
+                        PersistJob(job);
+                    if (!Throttled(_lastProgressBroadcastTicks, job.JobId, ProgressBroadcastIntervalTicks, force: false))
+                        await _dashboardEvents.JobProgress(job);
                 }
                 return;
             }
@@ -855,6 +878,23 @@ public class JobQueueManager : BackgroundService
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         return lines.Length == 0 ? fallback : lines[^1];
+    }
+
+    // Returns true when the action should be skipped because it ran for
+    // this job within the interval. Forced actions always run and reset the
+    // window, so callers never lose terminal or 100% updates.
+    private static bool Throttled(ConcurrentDictionary<string, long> map, string jobId, long intervalTicks, bool force)
+    {
+        var now = DateTime.UtcNow.Ticks;
+        if (force)
+        {
+            map[jobId] = now;
+            return false;
+        }
+        var last = map.GetOrAdd(jobId, 0L);
+        if (last != 0 && now - last < intervalTicks) return true;
+        map[jobId] = now;
+        return false;
     }
 
     private void PersistJob(DownloadJob job)
