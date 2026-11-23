@@ -230,6 +230,20 @@ internal sealed partial class MainForm : Form
         BringToFront();
     }
 
+    public void OpenYouTubeLogin()
+    {
+        ShowMainWindow();
+        YouTubeCookieService.ShowLoginWindow(this, (success, msg) =>
+        {
+            if (success)
+            {
+                _status.Text = "YouTube cookies synchronized successfully!";
+                _tray.ShowBalloonTip(2500, "YouTube Authenticated", "Cookies saved. You can now download YouTube media without bot verification.", ToolTipIcon.Info);
+                UpdateCookieStatusUi();
+            }
+        });
+    }
+
     public void Shutdown() { _explicitExit = true; Close(); }
 
     private void RequestExit()

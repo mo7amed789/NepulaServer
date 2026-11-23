@@ -7,6 +7,7 @@ using NebulaServer.Services.Jobs;
 using NebulaServer.Models.Pairing;
 using NebulaServer.Services.Pairing;
 using NebulaServer.Models.Dashboard;
+using NebulaServer.Services;
 using NebulaServer.Services.Dashboard;
 using System;
 using System.IO;
@@ -158,5 +159,59 @@ public sealed class SystemController : ControllerBase
     {
         NebulaServer.Desktop.DesktopApplication.RequestShowWindow();
         return Ok(new { success = true, message = "Window show requested" });
+    }
+
+    [HttpGet("api/system/cookies")]
+    public IActionResult GetCookieStatus()
+    {
+        var status = YouTubeCookieService.GetStatus();
+        return Ok(new
+        {
+            exists = status.Exists,
+            count = status.Count,
+            isLoggedIn = status.IsLoggedIn,
+            lastModified = status.LastModified,
+            path = status.Path
+        });
+    }
+
+    [HttpPost("api/system/cookies/sync")]
+    public IActionResult RequestCookieSync()
+    {
+        NebulaServer.Desktop.DesktopApplication.RequestOpenYouTubeLogin();
+        return Ok(new { success = true, message = "YouTube login window requested" });
+    }
+
+    public sealed class CookieContentRequest
+    {
+        public string? Content { get; set; }
+    }
+
+    [HttpPost("api/system/cookies/text")]
+    public async Task<IActionResult> SaveCookieContent([FromBody] CookieContentRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request?.Content))
+            return BadRequest(new { success = false, message = "Cookie content cannot be empty." });
+
+        await YouTubeCookieService.SaveNetscapeCookiesAsync(request.Content);
+        var status = YouTubeCookieService.GetStatus();
+        return Ok(new
+        {
+            success = true,
+            status = new
+            {
+                exists = status.Exists,
+                count = status.Count,
+                isLoggedIn = status.IsLoggedIn,
+                lastModified = status.LastModified
+            }
+        });
+    }
+
+    [HttpDelete("api/system/cookies")]
+    public IActionResult DeleteCookies()
+    {
+        YouTubeCookieService.DeleteCookies();
+        return Ok(new { success = true });
     }
 }

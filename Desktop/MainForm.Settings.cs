@@ -4,6 +4,7 @@ using System.Windows.Forms;
 using NebulaServer.Helpers;
 using NebulaServer.Models.Dashboard;
 using NebulaServer.Models.Pairing;
+using NebulaServer.Services;
 using NebulaServer.Services.Pairing;
 using NebulaServer.Services.Server;
 using QRCoder;
@@ -21,6 +22,7 @@ internal sealed partial class MainForm
     private readonly Label _networkInfo = Label("Checking network…");
     private readonly Label _deviceInfo = Label("No connected devices.");
     private readonly PictureBox _pairingQr = new() { Size = new Size(210, 210), SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.White };
+    private readonly Label _cookieStatusLabel = Label("Checking YouTube cookies…");
 
     private Control BuildOverviewPage()
     {
@@ -93,16 +95,70 @@ internal sealed partial class MainForm
         files.Controls.Add(folder);
         files.Controls.Add(Row(Button("Open downloads", () => TryAction(() => OpenFolder(_storage.DownloadsPath))), Button("Open logs", () => TryAction(() => OpenFolder(RuntimePaths.Logs)))));
         stack.Controls.Add(files);
+        var cookiesCard = Card("YouTube & Authentication");
+        cookiesCard.Controls.Add(Label("Sign in to your YouTube / Google account once to automatically get cookies and avoid bot detection errors."));
+        cookiesCard.Controls.Add(_cookieStatusLabel);
+        var btnSyncCookies = Button("Auto-Get YouTube Cookies (Sign In)", () => OpenYouTubeLogin());
+        var btnImportCookies = Button("Import cookies.txt", () => ImportCookiesDialog());
+        var btnClearCookies = Button("Clear Cookies", () =>
+        {
+            YouTubeCookieService.DeleteCookies();
+            UpdateCookieStatusUi();
+        });
+        cookiesCard.Controls.Add(Row(btnSyncCookies, btnImportCookies, btnClearCookies));
+        stack.Controls.Add(cookiesCard);
+
         var about = Card("Tanzeel for Windows");
         about.Controls.Add(Label("Video, audio, playlists, and images — in a native Windows app.", 11));
         about.Controls.Add(Label("Ctrl+N  New download     ·     Ctrl+J  Downloads\nDouble-click a completed download to open it with your default media app.", 10));
         about.Controls.Add(Label("Settings are saved automatically. Your existing download history is preserved.", 9));
         stack.Controls.Add(about);
         var page = ScrollPage(stack);
-        var sections = Row(Button("Desktop behavior", () => page.ScrollControlIntoView(behavior)), Button("Your files", () => page.ScrollControlIntoView(files)), Button("Shortcuts", () => page.ScrollControlIntoView(about)));
+        var sections = Row(Button("Desktop behavior", () => page.ScrollControlIntoView(behavior)), Button("Your files", () => page.ScrollControlIntoView(files)), Button("YouTube & Cookies", () => page.ScrollControlIntoView(cookiesCard)), Button("Shortcuts", () => page.ScrollControlIntoView(about)));
         var layout = new Panel();
         page.Dock = DockStyle.Fill; sections.Dock = DockStyle.Top;
         layout.Controls.Add(page); layout.Controls.Add(sections);
+        UpdateCookieStatusUi();
         return layout;
+    }
+
+    private void UpdateCookieStatusUi()
+    {
+        var status = YouTubeCookieService.GetStatus();
+        if (status.Exists)
+        {
+            _cookieStatusLabel.Text = status.IsLoggedIn
+                ? $"✓ Active cookies found ({status.Count} cookies). YouTube session is authenticated."
+                : $"⚠ Cookies found ({status.Count} cookies), but no active Google sign-in detected.";
+            _cookieStatusLabel.ForeColor = status.IsLoggedIn ? Color.FromArgb(53, 208, 127) : Color.Orange;
+        }
+        else
+        {
+            _cookieStatusLabel.Text = "No YouTube cookies configured. Click 'Auto-Get YouTube Cookies' to sign in and capture them.";
+            _cookieStatusLabel.ForeColor = Muted;
+        }
+    }
+
+    private void ImportCookiesDialog()
+    {
+        using var ofd = new OpenFileDialog
+        {
+            Title = "Select cookies.txt file",
+            Filter = "Cookie text files (*.txt)|*.txt|All files (*.*)|*.*"
+        };
+        if (ofd.ShowDialog(this) == DialogResult.OK)
+        {
+            try
+            {
+                var content = File.ReadAllText(ofd.FileName);
+                _ = YouTubeCookieService.SaveNetscapeCookiesAsync(content);
+                UpdateCookieStatusUi();
+                MessageBox.Show(this, "Cookies imported successfully!", "Tanzeel", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Failed to import cookies: " + ex.Message, "Tanzeel", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
     }
 }

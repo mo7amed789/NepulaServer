@@ -5,6 +5,7 @@ namespace NebulaServer.Desktop;
 public static class DesktopApplication
 {
     private static Action? _showWindow;
+    private static Action? _openYouTubeLogin;
 
     public static Task RunAsync(IServiceProvider services, bool startInBackground, CancellationToken stoppingToken)
     {
@@ -25,6 +26,7 @@ public static class DesktopApplication
                     catch (InvalidOperationException) { /* Window is shutting down. */ }
                 }
                 Volatile.Write(ref _showWindow, () => Post(form.ShowMainWindow));
+                Volatile.Write(ref _openYouTubeLogin, () => Post(form.OpenYouTubeLogin));
                 using var context = new ApplicationContext();
                 form.FormClosed += (_, _) => context.ExitThread();
                 using var shutdown = stoppingToken.Register(() => Post(form.Shutdown));
@@ -33,7 +35,11 @@ public static class DesktopApplication
                 completion.TrySetResult();
             }
             catch (Exception ex) { completion.TrySetException(ex); }
-            finally { Volatile.Write(ref _showWindow, null); }
+            finally
+            {
+                Volatile.Write(ref _showWindow, null);
+                Volatile.Write(ref _openYouTubeLogin, null);
+            }
         }) { Name = "Tanzeel desktop", IsBackground = false };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
@@ -41,4 +47,5 @@ public static class DesktopApplication
     }
 
     public static void RequestShowWindow() => Volatile.Read(ref _showWindow)?.Invoke();
+    public static void RequestOpenYouTubeLogin() => Volatile.Read(ref _openYouTubeLogin)?.Invoke();
 }
