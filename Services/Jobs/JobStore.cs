@@ -9,8 +9,21 @@ namespace NebulaServer.Services.Jobs;
 public sealed class JobStore
 {
     private const string Columns = "Id, Url, Status, Progress, OutputPath, CreatedAt, RequestJson, TransferJson, ThumbnailUrl, Title";
+    // Same projection without TransferJson: playlist transfer snapshots are
+    // tens of KB per row and no history-list consumer reads them.
+    private const string ColumnsNoTransfer = "Id, Url, Status, Progress, OutputPath, CreatedAt, RequestJson, ThumbnailUrl, Title";
     private readonly object _lock = new();
     private readonly string _connectionString;
+    private long _historyRevision;
+
+    // Incremented under the store lock on every mutation. Readers that merge
+    // history with live job state (the desktop refresh timer) can skip a full
+    // table reload while the revision is unchanged. Process-local by design:
+    // the app is single-instance and the store is a DI singleton.
+    public long HistoryRevision
+    {
+        get { lock (_lock) return _historyRevision; }
+    }
 
     public JobStore() : this(Path.Combine(RuntimePaths.Data, "jobs.db")) { }
 
@@ -57,6 +70,7 @@ public sealed class JobStore
             command.Parameters.AddWithValue("$thumbnailUrl", job.ThumbnailUrl ?? string.Empty);
             command.Parameters.AddWithValue("$title", job.Title ?? string.Empty);
             command.ExecuteNonQuery();
+            _historyRevision++;
         }
     }
 
@@ -78,21 +92,26 @@ public sealed class JobStore
 
     public List<JobSnapshot> GetAllHistory() => ReadJobs("ORDER BY CreatedAt DESC");
 
-    private List<JobSnapshot> ReadJobs(string clause)
+    // History lists (web dashboard, desktop queue, mobile app) never render
+    // per-item transfer manifests. Skipping the column keeps large playlist
+    // snapshots out of these reads entirely.
+    public List<JobSnapshot> GetHistoryWithoutTransfers() => ReadJobs("ORDER BY CreatedAt DESC", includeTransfer: false);
+
+    private List<JobSnapshot> ReadJobs(string clause, bool includeTransfer = true)
     {
         lock (_lock)
         {
             using var conn = OpenConnection();
             using var command = conn.CreateCommand();
-            command.CommandText = $"SELECT {Columns} FROM Jobs {clause};";
+            command.CommandText = $"SELECT {(includeTransfer ? Columns : ColumnsNoTransfer)} FROM Jobs {clause};";
             using var reader = command.ExecuteReader();
             var result = new List<JobSnapshot>();
-            while (reader.Read()) result.Add(ReadSnapshot(reader));
+            while (reader.Read()) result.Add(ReadSnapshot(reader, includeTransfer));
             return result;
         }
     }
 
-    private static JobSnapshot ReadSnapshot(SqliteDataReader reader) => new()
+    private static JobSnapshot ReadSnapshot(SqliteDataReader reader, bool includeTransfer = true) => new()
     {
         Id = reader.GetString(0),
         Url = reader.GetString(1),
@@ -101,9 +120,9 @@ public sealed class JobStore
         OutputPath = reader.IsDBNull(4) ? null : reader.GetString(4),
         CreatedAt = DateTime.Parse(reader.GetString(5), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
         RequestJson = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
-        TransferJson = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
-        ThumbnailUrl = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
-        Title = reader.IsDBNull(9) ? string.Empty : reader.GetString(9)
+        TransferJson = includeTransfer && !reader.IsDBNull(7) ? reader.GetString(7) : string.Empty,
+        ThumbnailUrl = reader.IsDBNull(includeTransfer ? 8 : 7) ? string.Empty : reader.GetString(includeTransfer ? 8 : 7),
+        Title = reader.IsDBNull(includeTransfer ? 9 : 8) ? string.Empty : reader.GetString(includeTransfer ? 9 : 8)
     };
 
     public void DeleteJob(string id)
@@ -115,6 +134,7 @@ public sealed class JobStore
             command.CommandText = "DELETE FROM Jobs WHERE Id = $id;";
             command.Parameters.AddWithValue("$id", id);
             command.ExecuteNonQuery();
+            _historyRevision++;
         }
     }
 
@@ -128,6 +148,7 @@ public sealed class JobStore
             // queued jobs remain recoverable if the app closes during a download.
             command.CommandText = "DELETE FROM Jobs WHERE Status IN ('COMPLETED', 'FAILED', 'CANCELED');";
             command.ExecuteNonQuery();
+            _historyRevision++;
         }
     }
 
