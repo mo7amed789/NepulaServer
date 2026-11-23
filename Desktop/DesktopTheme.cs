@@ -5,31 +5,32 @@ namespace NebulaServer.Desktop;
 
 internal static class DesktopTheme
 {
-    public static Color Background { get; private set; } = Color.FromArgb(244, 246, 249);
+    // TOP Game esports theme: warm neutrals, action orange, no red.
+    public static Color Background { get; private set; } = Color.FromArgb(247, 244, 242);
     public static Color Surface { get; private set; } = Color.White;
-    public static Color Ink { get; private set; } = Color.FromArgb(15, 23, 42);
-    public static Color Muted { get; private set; } = Color.FromArgb(99, 115, 134);
-    public static Color Accent { get; private set; } = Color.FromArgb(15, 118, 110);
-    public static Color Sidebar { get; private set; } = Color.FromArgb(11, 18, 32);
-    public static Color Border { get; private set; } = Color.FromArgb(218, 226, 233);
+    public static Color Ink { get; private set; } = Color.FromArgb(26, 20, 17);
+    public static Color Muted { get; private set; } = Color.FromArgb(125, 116, 108);
+    public static Color Accent { get; private set; } = Color.FromArgb(231, 85, 3);
+    public static Color Sidebar { get; private set; } = Color.FromArgb(24, 19, 16);
+    public static Color Border { get; private set; } = Color.FromArgb(232, 222, 214);
 
     public static void Apply(bool dark)
     {
         // Dark mode is intentionally true black rather than blue-gray. Keep
         // surfaces just above black so cards remain distinguishable without
         // allowing Windows' theme colors to leak into the app.
-        Background = dark ? Color.Black : Color.FromArgb(244, 246, 249);
+        Background = dark ? Color.Black : Color.FromArgb(247, 244, 242);
         // Keep control BackColor values opaque: WinForms rejects alpha colors
         // on standard TextBox/ComboBox/Panel controls. The actual glass layer
         // is provided by the Windows DWM backdrop and custom rounded painting.
-        Surface = dark ? Color.FromArgb(14, 21, 18) : Color.White;
-        Ink = dark ? Color.White : Color.FromArgb(15, 23, 42);
-        Muted = dark ? Color.FromArgb(184, 198, 190) : Color.FromArgb(99, 115, 134);
-        // Tanzeel's signature action color: the green used by familiar
-        // download utilities, tuned for high contrast on a black workspace.
-        Accent = dark ? Color.FromArgb(245, 193, 76) : Color.FromArgb(15, 118, 110);
-        Sidebar = dark ? Color.FromArgb(5, 9, 8) : Color.FromArgb(11, 18, 32);
-        Border = dark ? Color.FromArgb(45, 61, 53) : Color.FromArgb(218, 226, 233);
+        Surface = dark ? Color.FromArgb(21, 18, 16) : Color.White;
+        Ink = dark ? Color.FromArgb(247, 244, 242) : Color.FromArgb(26, 20, 17);
+        Muted = dark ? Color.FromArgb(184, 174, 166) : Color.FromArgb(125, 116, 108);
+        // TOP Game action orange (#E75503): the single action color of the
+        // design language, paired with a near-black label for contrast.
+        Accent = Color.FromArgb(231, 85, 3);
+        Sidebar = dark ? Color.FromArgb(11, 9, 8) : Color.FromArgb(24, 19, 16);
+        Border = dark ? Color.FromArgb(58, 48, 40) : Color.FromArgb(232, 222, 214);
     }
 
     public static Label Label(string text, float size = 10, bool bold = false) => new()
@@ -46,7 +47,7 @@ internal static class DesktopTheme
             Text = text, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
             MinimumSize = new Size(104, 38), Padding = new Padding(12, 5, 12, 5),
             FlatStyle = FlatStyle.Flat, BackColor = primary ? Accent : Surface,
-            ForeColor = primary && Background == Color.Black ? Color.FromArgb(24, 24, 18) : primary ? Color.White : Ink, Cursor = Cursors.Hand,
+            ForeColor = primary ? Color.FromArgb(26, 14, 6) : Ink, Cursor = Cursors.Hand,
             Margin = new Padding(0, 0, 10, 0), UseVisualStyleBackColor = false,
             Tag = primary ? "primary" : null
         };
