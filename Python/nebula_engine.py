@@ -58,6 +58,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from nebula.encoding import _encoder_args, get_video_encoder_args
+from nebula.remote_gpu import run_remote_demucs
 from nebula.probe import probe_media
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1573,6 +1574,8 @@ def _extract_wav(src: Path, dst: Path, ffmpeg: str, job_id: str) -> None:
 
 
 def _run_demucs(audio_in: Path, vocals_out: Path, job_id: str) -> None:
+    if run_remote_demucs(audio_in, vocals_out, lambda message: log(message, job_id)):
+        return
     _ensure_ai_dependencies()
     model    = _get_demucs_model(job_id)
     device   = "cuda" if torch.cuda.is_available() else "cpu"
