@@ -70,6 +70,14 @@ public class UniversalMediaExtractor : IMediaExtractor
             startInfo.ArgumentList.Add("--cookies");
             startInfo.ArgumentList.Add(appBaseCookies);
         }
+        else if (TryResolveBrowserCookieSource() is { } browserCookies)
+        {
+            // No cookies.txt: fall back to the browser's own session (the
+            // download engine already does this) so logged-in sources work
+            // without a manual export. Skipped when the store is locked.
+            startInfo.ArgumentList.Add("--cookies-from-browser");
+            startInfo.ArgumentList.Add(browserCookies);
+        }
 
         startInfo.ArgumentList.Add(trimmedUrl);
 
@@ -247,5 +255,63 @@ public class UniversalMediaExtractor : IMediaExtractor
                 ExtractionErrorCode.ExtractionFailed,
                 "Failed to parse media metadata from extractor.", ex);
         }
+    }
+
+    // =========================================================================
+    // Browser cookie discovery
+    // =========================================================================
+
+    private static readonly string[] CookieBrowsers = { "chrome", "edge", "brave" };
+
+    private static string? ResolveCookieStore(string browser)
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return browser switch
+        {
+            "chrome" => Path.Combine(localAppData, "Google", "Chrome", "User Data", "Default", "Network", "Cookies"),
+            "edge" => Path.Combine(localAppData, "Microsoft", "Edge", "User Data", "Default", "Network", "Cookies"),
+            "brave" => Path.Combine(localAppData, "BraveSoftware", "Brave-Browser", "User Data", "Default", "Network", "Cookies"),
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// A Chromium browser holds an exclusive lock on its cookie database while
+    /// it is running, which makes yt-dlp fail with "Could not copy Chrome
+    /// cookie database". Probing readability here keeps that failure from
+    /// replacing the anonymous attempt.
+    /// </summary>
+    private static bool IsCookieStoreReadable(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return stream.Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string? TryResolveBrowserCookieSource()
+    {
+        foreach (var browser in CookieBrowsers)
+        {
+            var store = ResolveCookieStore(browser);
+            if (store is null || !File.Exists(store))
+                continue;
+
+            if (!IsCookieStoreReadable(store))
+            {
+                _logger.LogDebug("Skipping {Browser} cookies for extraction: cookie database is locked by a running browser.", browser);
+                continue;
+            }
+
+            _logger.LogInformation("Using {Browser} cookies for extraction.", browser);
+            return browser;
+        }
+
+        return null;
     }
 }

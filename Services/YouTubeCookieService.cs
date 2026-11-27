@@ -61,7 +61,9 @@ public static class YouTubeCookieService
     {
         RuntimePaths.EnsureDirectories();
         var tempFile = CookieFilePath + ".tmp";
-        await File.WriteAllTextAsync(tempFile, content, Encoding.UTF8);
+        // No BOM: yt-dlp rejects a cookie file that starts with U+FEFF and
+        // reports "does not look like a Netscape format cookies file".
+        await File.WriteAllTextAsync(tempFile, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         File.Move(tempFile, CookieFilePath, overwrite: true);
         Log.Information("Saved {Length} bytes of cookies to {Path}", content.Length, CookieFilePath);
     }
