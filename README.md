@@ -80,6 +80,40 @@ http://localhost:5000/pairing
 
 The port can be changed through configuration or the `Server__Port` environment variable.
 
+## Media toolchain
+
+A clone that only builds cannot download anything yet: FFmpeg, Python, and (for YouTube) a session cookie are all required at runtime.
+
+### FFmpeg
+
+`ffmpeg.exe` and `ffprobe.exe` must sit next to the server binary. They are resolved from `AppContext.BaseDirectory` only — never from `PATH`:
+
+```text
+bin\Debug\net10.0-windows\win-x64\ffmpeg.exe
+bin\Debug\net10.0-windows\win-x64\ffprobe.exe
+```
+
+Take a build from <https://www.gyan.dev/ffmpeg/builds/> and copy both executables there, again after any `dotnet clean`. `GET /api/dashboardapp` reports `runtime.ffmpegReady` as `false` while they are missing.
+
+### Python
+
+The media engine is launched with an interpreter resolved in this order: `Python\python.exe` next to the binary, the repository's `Python\python.exe`, `python` on `PATH`, then the usual `%LocalAppData%\Programs\Python\Python3xx` installs. Install the engine dependencies into whichever interpreter resolves:
+
+```powershell
+python -m pip install yt-dlp requests curl_cffi
+```
+
+Node.js 22+ on `PATH` is recommended — yt-dlp uses it for YouTube's JavaScript challenges and the server prepends it automatically. `GET /api/dashboardapp` reports `runtime.pythonReady` once both the interpreter and `Python\nebula_engine.py` are usable.
+
+### YouTube cookies
+
+YouTube bot-checks most server IP addresses. Without a session cookie, requests fail with `Sign in to confirm you're not a bot`, which surfaces as `AuthenticationRequired` from `/api/media/extract` and as `YouTube rejected the request (bot detection)` from download jobs. Cookies are the only reliable fix:
+
+- **Desktop app:** open **Settings -> YouTube & Authentication** and sign in. The WebView2 window captures the session and writes `%ProgramData%\Tanzeel\cookies.txt` automatically.
+- **Headless:** run `Tools\Export-BrowserCookies.cmd`. The target browser must be closed first — Chrome and Edge keep an exclusive lock on their cookie database while running, which makes yt-dlp fail with `Could not copy Chrome cookie database`.
+
+The engine looks for `cookies.txt` in `Python\cookies.txt`, then in the app directory, then in `%ProgramData%\Tanzeel\cookies.txt`, and falls back to the browser's own cookie store when no file exists. Cookies expire, so re-export when downloads start failing again. `GET /api/system/cookies` reports whether a file exists and whether it looks logged in. A PO token provider (for example `bgutil-ytdlp-pot-provider`) reduces 403 errors on format URLs but does not replace cookies for the bot check.
+
 ## Configuration
 
 Use `appsettings.json` for non-sensitive defaults and environment variables or a local configuration provider for deployment-specific values. Never commit private signing keys, JWT secrets, access tokens, downloaded media, or machine-specific identity files.
