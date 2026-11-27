@@ -33,7 +33,10 @@ namespace NebulaServer.Controllers
         {
             if (!Uri.TryCreate(request.Url, UriKind.Absolute, out var uri))
             {
-                return BadRequest(new { error = "Invalid URL format." });
+                var invalidUrl = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(400, HttpContext,
+                    "The Url field is not an absolute URI.",
+                    "Send an absolute http:// or https:// address in the Url field, for example https://example.com/gallery.");
+                return StatusCode(invalidUrl.Error.Status, invalidUrl);
             }
 
             try
@@ -42,7 +45,9 @@ namespace NebulaServer.Controllers
             }
             catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
             {
-                return BadRequest(new { error = ex.Message });
+                var blocked = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(400, HttpContext, ex.Message,
+                    "Use a public page. Loopback, private-network and metadata addresses are blocked on purpose, and the site must answer over http(s).");
+                return StatusCode(blocked.Error.Status, blocked);
             }
 
             try
@@ -52,11 +57,14 @@ namespace NebulaServer.Controllers
             }
             catch (InvalidOperationException ex)
             {
-                return BadRequest(new { error = ex.Message });
+                var analysis = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(400, HttpContext, ex.Message,
+                    "Check the page loads in a browser without logging in, and that it contains images. Script-driven galleries may need the page to be reached over its canonical URL.");
+                return StatusCode(analysis.Error.Status, analysis);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                return StatusCode(500, new { error = "An unexpected error occurred during analysis." });
+                var unexpected = NebulaServer.Services.Errors.ErrorCatalog.FromException(ex, HttpContext, false);
+                return StatusCode(unexpected.Error.Status, unexpected);
             }
         }
 
@@ -73,7 +81,10 @@ namespace NebulaServer.Controllers
         {
             if (!Uri.TryCreate(request.Url, UriKind.Absolute, out var uri))
             {
-                return BadRequest(new { error = "Invalid URL format." });
+                var invalidUrl = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(400, HttpContext,
+                    "The Url field is not an absolute URI.",
+                    "Send an absolute http:// or https:// address in the Url field, for example https://example.com/gallery.");
+                return StatusCode(invalidUrl.Error.Status, invalidUrl);
             }
 
             try
@@ -82,7 +93,9 @@ namespace NebulaServer.Controllers
             }
             catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
             {
-                return BadRequest(new { error = ex.Message });
+                var blocked = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(400, HttpContext, ex.Message,
+                    "Use a public page. Loopback, private-network and metadata addresses are blocked on purpose, and the site must answer over http(s).");
+                return StatusCode(blocked.Error.Status, blocked);
             }
 
             // We need a dummy candidate just to hold the URL for the downloader
@@ -110,7 +123,10 @@ namespace NebulaServer.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { error = "Failed to download or validate image.", details = ex.Message });
+                var failed = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(502, HttpContext,
+                    $"The image could not be downloaded or validated: {ex.Message}",
+                    "The host may block direct image requests or serve a response that is not an image. Open the image URL in a browser; if it needs a referer or login, download it from the page instead.");
+                return StatusCode(failed.Error.Status, failed);
             }
         }
     }

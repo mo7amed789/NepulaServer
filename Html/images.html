@@ -419,7 +419,8 @@
                 try {
                     done += await downloadImagesFromUrl(url);
                 } catch(e) {
-                    showToast('Failed', e.message || `Could not download images from: ${url.slice(0,40)}…`, 'error');
+                    showApiFailure(e.apiPayload, 'Could not download these images',
+                        e.message || `Could not download images from: ${url.slice(0,40)}…`);
                 }
                 processed++;
                 progressBar.style.width = Math.round(processed / total * 100) + '%';
@@ -480,10 +481,7 @@
                 body: JSON.stringify({ Url: url })
             });
             
-            if (!analyzeResp.ok) {
-                const failure = await analyzeResp.json().catch(() => ({}));
-                throw new Error(failure.error || 'Analysis failed');
-            }
+            if (!analyzeResp.ok) throw await apiErrorFromResponse(analyzeResp, 'Could not read images from that page');
             const result = await analyzeResp.json();
             
             if (!result.images || result.images.length === 0) {
@@ -618,7 +616,81 @@
         });
 
         // ─── Toast ────────────────────────────────────────────────────
-        function showToast(title, message, type = 'info') {
+
+        // =====================================================================
+        // API error presentation (same envelope as the main dashboard)
+        // =====================================================================
+        function buildApiErrorBody(payload, fallbackMessage) {
+            const error = payload && payload.error;
+            const body = document.createElement('div');
+
+            if (!error || typeof error === 'string') {
+                body.className = 'toast-reason';
+                body.textContent = (payload && (payload.message || payload.error)) || fallbackMessage || 'Something went wrong.';
+                return body;
+            }
+
+            const reason = document.createElement('div');
+            reason.className = 'toast-reason';
+            reason.textContent = error.reason || payload.message || fallbackMessage || 'Something went wrong.';
+            body.appendChild(reason);
+
+            if (error.fix) {
+                const fix = document.createElement('div');
+                fix.className = 'toast-fix';
+                const label = document.createElement('span');
+                label.className = 'toast-fix-label';
+                label.textContent = 'How to fix';
+                fix.appendChild(label);
+                fix.appendChild(document.createTextNode(error.fix));
+                body.appendChild(fix);
+            }
+
+            const meta = [error.code, error.requestId ? `ref ${error.requestId}` : '']
+                .filter(Boolean)
+                .join(' · ');
+            if (meta) {
+                const metaLine = document.createElement('div');
+                metaLine.className = 'toast-meta';
+                metaLine.textContent = meta;
+                body.appendChild(metaLine);
+            }
+
+            return body;
+        }
+
+        function showApiFailure(payload, fallbackTitle, fallbackMessage) {
+            const error = payload && payload.error;
+            const title = (error && error.title) || fallbackTitle || 'Request failed';
+            const longLived = !error || error.retryable !== false;
+            showToastWithDuration(title, buildApiErrorBody(payload, fallbackMessage), 'error', longLived ? 12000 : 10000);
+        }
+
+        async function readApiFailure(response) {
+            try {
+                const text = await response.text();
+                if (!text) return null;
+                return JSON.parse(text);
+            } catch (_) {
+                return null;
+            }
+        }
+
+        async function apiErrorFromResponse(response, fallbackTitle) {
+            const payload = await readApiFailure(response);
+            const failure = new Error((payload && payload.message) || `${fallbackTitle} (HTTP ${response.status})`);
+            failure.apiPayload = payload || {
+                error: {
+                    title: fallbackTitle,
+                    reason: `The server answered HTTP ${response.status} without details.`,
+                    fix: 'Retry the request, then check the server log if it keeps failing.',
+                    status: response.status
+                }
+            };
+            return failure;
+        }
+
+        function showToastWithDuration(title, message, type = 'info', duration = 5000) {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
             toast.className = `toast toast-${type}`;
@@ -634,7 +706,12 @@
             if (message) {
                 const toastMessage = document.createElement('div');
                 toastMessage.className = 'toast-message';
-                toastMessage.textContent = String(message);
+                if (message instanceof Node) {
+                    toastMessage.textContent = '';
+                    toastMessage.appendChild(message);
+                } else {
+                    toastMessage.textContent = String(message);
+                }
                 toastContent.appendChild(toastMessage);
             }
 
@@ -655,7 +732,11 @@
                     toast.classList.add('toast-exit');
                     setTimeout(() => toast.remove(), 200);
                 }
-            }, 5000);
+            }, duration);
+        }
+
+        function showToast(title, message, type = 'info') {
+            showToastWithDuration(title, message, type, 5000);
         }
 
         const incomingImageUrl = new URLSearchParams(window.location.search).get('url');
