@@ -452,6 +452,40 @@ select.input {
     color: var(--text-secondary);
 }
 
+.toast-reason {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.toast-fix {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-left: 3px solid var(--warning, #d29922);
+    background: rgba(210, 153, 34, 0.12);
+    border-radius: 4px;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    color: var(--text-primary);
+}
+
+.toast-fix-label {
+    display: block;
+    margin-bottom: 2px;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--warning, #d29922);
+}
+
+.toast-meta {
+    margin-top: 6px;
+    font-size: 0.6875rem;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    color: var(--text-muted);
+    word-break: break-all;
+}
+
 .toast-close {
     color: var(--text-muted);
     cursor: pointer;

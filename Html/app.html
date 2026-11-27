@@ -754,6 +754,86 @@
             }, duration);
         }
 
+
+        // =====================================================================
+        // API error presentation
+        // The server always answers with { success:false, message, error:{ code,
+        // title, reason, fix, retryable, requestId } }. Toasts show the reason and
+        // a separate "How to fix" line so the user knows what to do next.
+        // =====================================================================
+
+        function buildApiErrorBody(payload, fallbackMessage) {
+            const error = payload && payload.error;
+            const body = document.createElement('div');
+
+            if (!error) {
+                body.className = 'toast-reason';
+                body.textContent = (payload && (payload.message || payload.error)) || fallbackMessage || 'Something went wrong.';
+                return body;
+            }
+
+            const reason = document.createElement('div');
+            reason.className = 'toast-reason';
+            reason.textContent = error.reason || payload.message || fallbackMessage || 'Something went wrong.';
+            body.appendChild(reason);
+
+            if (error.fix) {
+                const fix = document.createElement('div');
+                fix.className = 'toast-fix';
+                const label = document.createElement('span');
+                label.className = 'toast-fix-label';
+                label.textContent = 'How to fix';
+                fix.appendChild(label);
+                fix.appendChild(document.createTextNode(error.fix));
+                body.appendChild(fix);
+            }
+
+            const meta = [error.code, error.requestId ? `ref ${error.requestId}` : '']
+                .filter(Boolean)
+                .join(' · ');
+            if (meta) {
+                const metaLine = document.createElement('div');
+                metaLine.className = 'toast-meta';
+                metaLine.textContent = meta;
+                body.appendChild(metaLine);
+            }
+
+            return body;
+        }
+
+        function showApiFailure(payload, fallbackTitle, fallbackMessage) {
+            const error = payload && payload.error;
+            const title = (error && error.title) || fallbackTitle || 'Request failed';
+            const longLived = !error || error.retryable !== false;
+            showToast(title, buildApiErrorBody(payload, fallbackMessage), 'error', longLived ? 12000 : 10000);
+        }
+
+        async function readApiFailure(response) {
+            try {
+                const text = await response.text();
+                if (!text) return null;
+                return JSON.parse(text);
+            } catch (_) {
+                return null;
+            }
+        }
+
+        // Attaches the parsed error envelope to the thrown Error so the catch
+        // block can show reason + fix instead of a generic message.
+        async function apiErrorFromResponse(response, fallbackTitle) {
+            const payload = await readApiFailure(response);
+            const failure = new Error((payload && payload.message) || `${fallbackTitle} (HTTP ${response.status})`);
+            failure.apiPayload = payload || {
+                error: {
+                    title: fallbackTitle,
+                    reason: `The server answered HTTP ${response.status} without details.`,
+                    fix: 'Retry the request, then check the server log if it keeps failing.',
+                    status: response.status
+                }
+            };
+            return failure;
+        }
+
         function validateUrl(input) {
             const error = document.getElementById('urlError');
             if (!input.value.trim()) {
@@ -966,7 +1046,7 @@
                     signal: requestController.signal
                 });
                 
-                if (!response.ok) throw new Error('Failed to fetch preview');
+                if (!response.ok) throw await apiErrorFromResponse(response, 'Could not load video information');
 
                 const data = await response.json();
                 let targetInfo = data.entries && data.entries.length > 0 ? data.entries[0] : data;
@@ -1013,7 +1093,11 @@
                 if (err.name === 'AbortError') return;
                 document.getElementById('videoInfoSkeleton').classList.add('hidden');
                 restoreDefaultQualities();
-                showToast('Fetch Failed', 'Could not load video metadata. You can still try downloading.', 'warning');
+                if (err.apiPayload) {
+                    showApiFailure(err.apiPayload, 'Could not load video information');
+                } else {
+                    showToast('Fetch Failed', 'Could not load video metadata. You can still try downloading.', 'warning');
+                }
             } finally {
                 if (previewAbortController === requestController) {
                     previewAbortController = null;
@@ -1128,7 +1212,7 @@
                     fetchInitialJobState(currentJobId);
                 } else {
                     updateProgress(100, 'Error', true);
-                    showToast('Error', data.message || 'Unknown error occurred', 'error');
+                    showApiFailure(data, 'Could not start the download');
                     document.getElementById('btnStart').disabled = false;
                 }
             } catch (error) {
@@ -1175,10 +1259,11 @@
                     window.URL.revokeObjectURL(downloadUrl);
                     showToast('Success', `File downloaded: ${filename}`, 'success');
                 } else {
-                    showToast('Error', 'Failed to save file to device.', 'error');
+                    const payload = await readApiFailure(response);
+                    showApiFailure(payload, 'Could not save the file to this device');
                 }
             } catch (error) {
-                showToast('Error', 'An error occurred while downloading.', 'error');
+                showApiFailure(error.apiPayload, 'Could not save the file to this device', error.message);
             }
         }
 
@@ -1186,14 +1271,13 @@
             if (!currentJobId) return;
             try {
                 const response = await fetch(`/api/jobs/${currentJobId}/cancel`, { method: 'POST', headers: { 'X-Nebula-Key': globalPairingKey } });
-                if (response.ok) {
-                    currentJobId = null;
-                    document.getElementById('btnSaveToDesktop').classList.add('hidden');
-                    updateProgress(0, 'CANCELLED', true);
-                    showToast('Cancelled', 'Job cancelled successfully.', 'warning');
-                    document.getElementById('btnStart').disabled = false;
-                }
-            } catch (error) { showToast('Error', 'Failed to cancel job.', 'error'); }
+                if (!response.ok) throw await apiErrorFromResponse(response, 'Could not cancel the job');
+                currentJobId = null;
+                document.getElementById('btnSaveToDesktop').classList.add('hidden');
+                updateProgress(0, 'CANCELLED', true);
+                showToast('Cancelled', 'Job cancelled successfully.', 'warning');
+                document.getElementById('btnStart').disabled = false;
+            } catch (error) { showApiFailure(error.apiPayload, 'Could not cancel the job', error.message); }
         }
 
         async function loadHistory() {
@@ -1336,10 +1420,11 @@
                     window.URL.revokeObjectURL(downloadUrl);
                     showToast('Success', `File downloaded: ${filename}`, 'success');
                 } else {
-                    showToast('Error', 'Failed to save file. File might no longer exist on server disk.', 'error');
+                    const payload = await readApiFailure(response);
+                    showApiFailure(payload, 'Could not download this file');
                 }
             } catch (error) {
-                showToast('Error', 'An error occurred while downloading.', 'error');
+                showApiFailure(error.apiPayload, 'Could not download this file', error.message);
             }
         }
 
