@@ -1,9 +1,12 @@
 using System;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Configuration;
 using NebulaServer.Helpers;
 using NebulaServer.Services;
 using NebulaServer.Services.Core;
 using NebulaServer.Services.Dashboard;
+using NebulaServer.Services.Licensing;
 using NebulaServer.Services.Devices;
 using NebulaServer.Services.Jobs;
 using NebulaServer.Services.Pairing;
@@ -85,9 +88,21 @@ namespace NebulaServer.Extensions
             services.AddSingleton<IDashboardEvents, DashboardEventService>();
             services.AddSingleton<ServerStateService>();
             services.AddSingleton<ServerStateFileService>();
+
+            // Licensing link to NebulaLicensingServer (see docs in README).
+            services.AddSingleton<IOptions<LicensingOptions>>(sp =>
+            {
+                var configuration = sp.GetRequiredService<IConfiguration>();
+                var options = configuration.GetSection(LicensingOptions.SectionName).Get<LicensingOptions>()
+                              ?? new LicensingOptions();
+                return Options.Create(options);
+            });
+            services.AddSingleton<LicensingClient>();
+
             services.AddSingleton<LicenseService>();
             services.AddSingleton<ServerInfoHostedService>();
             services.AddHostedService<CoreLifecycleService>();
+            services.AddHostedService<LicenseHeartbeatService>();
 
             return services;
         }

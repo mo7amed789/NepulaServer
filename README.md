@@ -128,6 +128,87 @@ dotnet run --project .\NebulaServer.csproj
 
 Review the startup and licensing services before exposing the API outside a trusted network. Put public deployments behind HTTPS and a properly configured reverse proxy.
 
+## Licensing server link
+
+NepulaServer validates its license against [NebulaLicensingServer](https://github.com/mo7amed789/NebulaLicensingServer). The link stays inactive until `Licensing:BaseUrl` is set, so a plain clone runs unlicensed.
+
+### Configuration
+
+```json
+"Licensing": {
+  "BaseUrl": "https://license.example.com",
+  "LicenseKey": "",
+  "DeviceName": "",
+  "NebulaVersion": "1.0.0",
+  "HeartbeatMinutes": 30,
+  "RequestTimeoutSeconds": 15,
+  "RequireSignature": true,
+  "PublicKeyPem": "",
+  "AllowInvalidCertificate": false,
+  "MachineHashOverride": ""
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `BaseUrl` | Licensing server origin. Empty disables licensing. |
+| `LicenseKey` | Key shipped with the install (`NBL-XXXX-XXXX-XXXX-XXXX`). A key saved through `POST /api/setup/license` wins over this. |
+| `DeviceName` | Name bound to the license. Defaults to the machine name. |
+| `HeartbeatMinutes` | Interval between background checks. |
+| `RequestTimeoutSeconds` | Per-request HTTP timeout. |
+| `RequireSignature` | Reject responses whose RSA signature does not verify. Disable only when debugging. |
+| `PublicKeyPem` | Pinned licensing-server public key. When empty it is fetched once and cached. |
+| `AllowInvalidCertificate` | Accept a self-signed certificate (on-premise or `dotnet dev-certs` only). |
+| `MachineHashOverride` | Fixed machine hash for testing. |
+
+### Endpoints used
+
+| Call | Purpose |
+| --- | --- |
+| `POST /api/client/activate` | binds the key to this machine's hash |
+| `POST /api/client/validate` | periodic check, returns the signed expiry |
+| `POST /api/client/heartbeat` | liveness, sent after each successful check |
+| `GET /api/client/public-key` | fetched once, cached at `%ProgramData%\Tanzeel\license-public-key.pem` |
+
+Responses are signed RSA-SHA256 over
+`licenseKey|machineHash|deviceName|nebulaVersion|serverId|expiresAt|signedAt|graceUntil|activated`
+(round-trip UTC dates) and verified with the licensing server key. `serverId` is the server's `deviceId`; `deviceName` is read back from `%ProgramData%\Tanzeel\license-binding.json`, written on activation.
+
+### Behaviour
+
+- Activation runs automatically at startup when a key is available from configuration, the binding file, or `POST /api/setup/license`.
+- `GET /api/server/state` exposes `isLicensed` and `licenseKey`.
+- **Machine binding:** SHA-256 over the Windows `MachineGuid`, machine name, `PROCESSOR_IDENTIFIER` and OS version. Moving the install to another machine requires reactivation.
+- **Offline grace:** when the licensing server cannot be reached, the install stays licensed until `offlineGraceUntilUtc` from the last signed response (7 days by default on the server side); after that it is revoked.
+- **Rejections** (unknown, revoked, expired, machine mismatch) revoke immediately.
+
+### Running the licensing server locally
+
+It needs SQL Server or LocalDB, generates its RSA key pair on first start under `NebulaLicensingServer/Keys`, and seeds an `admin` account (`admin123` in Development):
+
+```powershell
+cd NebulaLicensingServer
+dotnet run --project NebulaLicensingServer --urls "http://localhost:5244"
+```
+
+Issue a license, then point NepulaServer at it:
+
+```powershell
+$login = Invoke-RestMethod -Method Post http://localhost:5244/api/auth/login `
+    -ContentType application/json -Body '{"username":"admin","password":"admin123"}'
+$license = Invoke-RestMethod -Method Post https://localhost:7087/api/licenses `
+    -ContentType application/json -Headers @{ Authorization = "Bearer $($login.data.accessToken)" } `
+    -Body '{"validMonths":1}'
+$license.data.licenseKey
+```
+
+```powershell
+$env:Licensing__BaseUrl = "https://localhost:7087"
+$env:Licensing__LicenseKey = "NBL-XXXX-XXXX-XXXX-XXXX"
+$env:Licensing__AllowInvalidCertificate = "true"   # development certificate only
+dotnet run --project .\NebulaServer.csproj
+```
+
 ## Android companion
 
 The optional Android client is located in `NebulaMobileAndroid`:
