@@ -25,6 +25,17 @@ public sealed class ApiErrorResponse
         new() { Message = Message, Error = Error with { LegacyCode = legacyCode } };
 }
 
+/// <summary>Details of the job that already exists for a requested URL.</summary>
+public sealed class DuplicateDownloadDetail
+{
+    [JsonPropertyName("jobId")] public required string JobId { get; init; }
+    [JsonPropertyName("title")] public required string Title { get; init; }
+    [JsonPropertyName("fileName")] public string FileName { get; init; } = string.Empty;
+    [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; init; }
+    [JsonPropertyName("isActive")] public bool IsActive { get; init; }
+    [JsonPropertyName("progress")] public double Progress { get; init; }
+}
+
 public sealed record ApiError
 {
     /// <summary>Stable machine-readable code, e.g. <c>cookies_required</c>.</summary>
@@ -54,6 +65,13 @@ public sealed record ApiError
     /// </summary>
     [JsonPropertyName("legacyCode")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? LegacyCode { get; init; }
+
+    /// <summary>
+    /// Present on <c>duplicate_download</c>: which existing job blocks the
+    /// request, so the UI can name it in the confirmation prompt.
+    /// </summary>
+    [JsonPropertyName("duplicate")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DuplicateDownloadDetail? Duplicate { get; init; }
 
     /// <summary>Extra context, only populated in the Development environment.</summary>
     [JsonPropertyName("details")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

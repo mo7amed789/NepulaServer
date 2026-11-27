@@ -232,6 +232,9 @@ internal sealed partial class MainForm
             try { metadata = await Task.Run(() => _storage.ExtractPreviewDataAsync(request.Url, request.Proxy), _closing.Token); }
             catch (Exception ex) { Serilog.Log.Debug(ex, "Metadata prefetch failed; queueing download without preview metadata."); }
         }
+        if (!ConfirmDuplicateDownload(request))
+            return;
+
         var job = await Task.Run(() => _jobs.CreateJob(request, metadata), _closing.Token);
         _preferences.Format = _format.Text; _preferences.Quality = _quality.Text;
         _preferences.AudioQuality = _audioQuality.Text; _preferences.FastMode = _fast.Checked;

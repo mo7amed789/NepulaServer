@@ -1146,6 +1146,57 @@
             }
         }
 
+
+        // The server refuses a second download of the same media until the user
+        // confirms. `payload` is the original request; AllowDuplicate is only set
+        // after an explicit yes, so an accidental double click cannot queue twice.
+        async function submitDuplicateAfterConfirmation(payload, data) {
+            const detail = (data && data.error && data.error.duplicate) || {};
+            const reason = (data && data.error && data.error.reason) || 'This media is already downloaded.';
+            const when = detail.createdAt ? new Date(detail.createdAt).toLocaleString() : 'earlier';
+
+            const lines = [
+                reason,
+                '',
+                detail.fileName ? `Existing file: ${detail.fileName}` : '',
+                detail.isActive
+                    ? 'A job for this link is still running. Starting another one will download it twice.'
+                    : `Saved on ${when}.`,
+                '',
+                'Download it again anyway?'
+            ].filter(Boolean);
+
+            if (!window.confirm(lines.join(String.fromCharCode(10)))) {
+                showToast('Canceled', 'The duplicate download was not started. The earlier file is in your Downloads list.', 'info');
+                updateProgress(0, 'Ready');
+                document.getElementById('btnStart').disabled = false;
+                return;
+            }
+
+            try {
+                const retry = await fetch('/api/jobs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Nebula-Key': globalPairingKey },
+                    body: JSON.stringify(Object.assign({}, payload, { AllowDuplicate: true }))
+                });
+
+                const retryData = await retry.json().catch(() => ({}));
+                if (retry.ok) {
+                    currentJobId = retryData.jobId;
+                    showToast('Job Started', 'Downloading a second copy as requested.', 'info');
+                    fetchInitialJobState(currentJobId);
+                } else {
+                    updateProgress(100, 'Error', true);
+                    showApiFailure(retryData, 'Could not start the download');
+                    document.getElementById('btnStart').disabled = false;
+                }
+            } catch (error) {
+                updateProgress(100, 'Network error', true);
+                showToast('Network Error', error.message || 'Could not connect to the server.', 'error');
+                document.getElementById('btnStart').disabled = false;
+            }
+        }
+
         async function startDownload() {
             requestNotificationPermission();
 
@@ -1210,6 +1261,10 @@
                     currentJobId = data.jobId;
                     showToast('Job Started', 'Your download has been queued.', 'info');
                     fetchInitialJobState(currentJobId);
+                } else if (data && data.error && data.error.code === 'duplicate_download') {
+                    // Ask first; nothing is queued unless the user says yes.
+                    updateProgress(0, 'Already downloaded', true);
+                    await submitDuplicateAfterConfirmation(payload, data);
                 } else {
                     updateProgress(100, 'Error', true);
                     showApiFailure(data, 'Could not start the download');

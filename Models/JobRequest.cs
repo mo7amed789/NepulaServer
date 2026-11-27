@@ -46,4 +46,12 @@ public class JobRequest
 
     [JsonPropertyName("MaxSpeedBytes")]
     public long? MaxSpeedBytes { get; set; }
+
+    /// <summary>
+    /// Set to true to download a URL that this server already has (in the queue
+    /// or on disk). The API answers 409 duplicate_download until this is set,
+    /// which is how the dashboard asks the user for confirmation.
+    /// </summary>
+    [JsonPropertyName("AllowDuplicate")]
+    public bool AllowDuplicate { get; set; }
 }

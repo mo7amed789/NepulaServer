@@ -115,6 +115,7 @@ namespace NebulaServer.Extensions
             services.AddSingleton<PythonProcessService>();
             services.AddSingleton<JobQueueManager>();
             services.AddSingleton<JobStore>();
+            services.AddSingleton<DuplicateDownloadGuard>();
             services.AddSingleton<PlaylistEventBus>();
             services.AddSingleton<StreamingTransferService>();
             services.AddSingleton<RecoveryBoot>();

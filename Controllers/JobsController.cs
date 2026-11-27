@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using NebulaServer.Helpers;
@@ -23,8 +24,10 @@ public class JobsController : ControllerBase
     private readonly StreamingTransferService _streamingTransfers;
     private readonly ServerStateService _serverState;
     private readonly JobStore _store;
+    private readonly DuplicateDownloadGuard _duplicates;
     private readonly ILogger<JobsController> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IHostEnvironment _environment;
 
     public JobsController(
         JobQueueManager jobs,
@@ -32,15 +35,19 @@ public class JobsController : ControllerBase
         StreamingTransferService streamingTransfers,
         ServerStateService serverState,
         JobStore store,
+        DuplicateDownloadGuard duplicates,
         ILogger<JobsController> logger,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        IHostEnvironment environment)
     {
         _jobs = jobs;
         _storage = storage;
         _streamingTransfers = streamingTransfers;
         _serverState = serverState;
         _store = store;
+        _duplicates = duplicates;
         _logger = logger;
+        _environment = environment;
         _httpClientFactory = httpClientFactory;
     }
 
@@ -215,6 +222,24 @@ public class JobsController : ControllerBase
         if (!ProxyAddress.TryNormalize(request.Proxy, out var normalizedProxy))
             return BadRequest("Proxy must be a valid HTTP or HTTPS URL.");
         request.Proxy = normalizedProxy;
+
+        // The same media is queued, running, or already on disk: refuse until the
+        // caller confirms with AllowDuplicate so one link cannot be queued twice
+        // by an accidental double click or a retried request.
+        if (!request.AllowDuplicate)
+        {
+            var existing = _duplicates.Find(request);
+            if (existing is not null)
+            {
+                _logger.LogInformation(
+                    "Duplicate download refused for {Url}: existing job {JobId} ({State}, {Percent:0}%).",
+                    request.Url, existing.JobId, existing.IsActive ? "active" : "completed", existing.Progress);
+
+                var duplicate = NebulaServer.Services.Errors.ErrorCatalog.DuplicateDownload(
+                    HttpContext, existing, NebulaServer.Services.Errors.ErrorCatalog.ShouldIncludeDetails(_environment));
+                return StatusCode(duplicate.Error.Status, duplicate);
+            }
+        }
 
         var job = _jobs.CreateJob(request);
 

@@ -69,6 +69,7 @@ internal sealed partial class MainForm
             if (row.State is not ("FAILED" or "CANCELED")) throw new InvalidOperationException("Only failed or canceled downloads can be retried.");
             var request = JsonSerializer.Deserialize<JobRequest>(row.Snapshot.RequestJson) ?? throw new InvalidOperationException("The original download options are missing.");
             DownloadOptions.Validate(request);
+            request.AllowDuplicate = true;   // retrying a failed job is already explicit
             var job = await Task.Run(() => _jobs.CreateJob(request), _closing.Token);
             _queueFilter.SelectedIndex = 0;
             await RefreshAsync(); SelectJob(job.JobId);

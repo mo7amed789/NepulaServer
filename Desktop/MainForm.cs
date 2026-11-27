@@ -364,6 +364,9 @@ internal sealed partial class MainForm : Form
         try { metadata = await Task.Run(() => _storage.ExtractPreviewDataAsync(request.Url), _closing.Token); }
         catch (Exception ex) { Serilog.Log.Warning(ex, "Clipboard preview extraction failed for {Url}; queuing original URL.", url); }
 
+        if (!ConfirmDuplicateDownload(request))
+            return;
+
         var job = await Task.Run(() => _jobs.CreateJob(request, metadata), _closing.Token);
         _status.Text = "Clipboard media added to the download queue.";
         _tray.ShowBalloonTip(2200, "Download queued", metadata?.Title ?? url, ToolTipIcon.Info);

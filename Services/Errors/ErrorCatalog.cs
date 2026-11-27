@@ -185,6 +185,52 @@ public static class ErrorCatalog
                  true)
         };
 
+
+    /// <summary>
+    /// 409 for a URL this server already has. The reason names the existing job
+    /// and the fix tells the user (or the UI) how to repeat it deliberately.
+    /// </summary>
+    public static ApiErrorResponse DuplicateDownload(
+        HttpContext context, Services.Jobs.ExistingDownload existing, bool includeDetails)
+    {
+        var requestId = RequestId(context);
+        var when = existing.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+
+        var reason = existing.IsActive
+            ? $"\"{existing.Title}\" is already downloading on this server ({existing.Progress:0}% done), started at {when}."
+            : $"\"{existing.Title}\" was already downloaded on {when}"
+              + (string.IsNullOrWhiteSpace(existing.FileName) ? "." : $" and saved as {existing.FileName}.");
+
+        const string fix = "Confirm to download it again, or open the existing file from the Downloads list. "
+                           + "Send the same request with \"AllowDuplicate\": true to skip this check.";
+
+        var message = $"Already downloaded: {reason} Fix: {fix}";
+
+        return new ApiErrorResponse
+        {
+            Message = message,
+            Error = new ApiError
+            {
+                Code = "duplicate_download",
+                Title = existing.IsActive ? "This download is already running" : "This video is already downloaded",
+                Reason = reason,
+                Fix = fix,
+                Status = 409,
+                Retryable = true,
+                RequestId = requestId,
+                Duplicate = new DuplicateDownloadDetail
+                {
+                    JobId = existing.JobId,
+                    Title = existing.Title,
+                    FileName = existing.FileName,
+                    CreatedAt = existing.CreatedAt,
+                    IsActive = existing.IsActive,
+                    Progress = existing.Progress
+                }
+            }
+        };
+    }
+
     // =========================================================================
     // Bare status codes (no exception, e.g. auth middleware or routing)
     // =========================================================================
