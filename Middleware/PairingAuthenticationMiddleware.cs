@@ -49,12 +49,9 @@ public sealed class PairingAuthenticationMiddleware
             context.Request.Method,
             context.Request.Path.Value);
 
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-
-        await context.Response.WriteAsJsonAsync(new
-        {
-            success = false,
-            error = "Missing or invalid bearer token."
-        });
+        var payload = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(
+            StatusCodes.Status401Unauthorized, context);
+        await NebulaServer.Services.Errors.ErrorCatalog.WriteAsync(
+            context, payload, StatusCodes.Status401Unauthorized);
     }
 }

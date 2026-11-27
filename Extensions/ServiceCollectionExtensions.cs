@@ -25,8 +25,43 @@ namespace NebulaServer.Extensions
     {
         public static IServiceCollection AddNebulaServices(this IServiceCollection services)
         {
-            services.AddControllers();
+            services.AddControllers().ConfigureApiBehaviorOptions(options =>
+            {
+                // Model binding / validation failures must use the same error
+                // envelope as exceptions, otherwise the UI gets a bare
+                // ProblemDetails blob with no fix instructions.
+                options.InvalidModelStateResponseFactory = context =>
+                {
+                    var problems = context.ModelState
+                        .Where(entry => entry.Value?.Errors.Count > 0)
+                        .SelectMany(entry => entry.Value!.Errors.Select(error => new
+                        {
+                            Field = string.IsNullOrWhiteSpace(entry.Key) ? "body" : entry.Key,
+                            Message = string.IsNullOrWhiteSpace(error.ErrorMessage)
+                                ? "The value is not valid for this field."
+                                : error.ErrorMessage
+                        }))
+                        .ToList();
 
+                    var detail = problems.Count == 0
+                        ? "The request body could not be read."
+                        : string.Join(" | ", problems.Select(p => $"{p.Field}: {p.Message}"));
+
+                    var contentType = context.HttpContext.Request.ContentType ?? string.Empty;
+                    var fix = contentType.Contains("json", StringComparison.OrdinalIgnoreCase)
+                        ? "Send a JSON body with Content-Type: application/json that matches the documented fields, and remove any invalid characters."
+                        : "Provide the required query or route values, for example /api/media/extract?url=https://... ; see the API table in README.md.";
+
+                    var payload = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(
+                        400, context.HttpContext, detail, fix);
+
+                    return new Microsoft.AspNetCore.Mvc.ObjectResult(payload)
+                    {
+                        StatusCode = StatusCodes.Status400BadRequest
+                    };
+                };
+            });
+            services.AddSignalR();
             services.AddHttpClient();
 
             // Image Engine HttpClients

@@ -4,6 +4,7 @@ using Microsoft.Extensions.FileProviders;
 using NebulaServer.Desktop;
 using NebulaServer.Extensions;
 using NebulaServer.Helpers;
+using NebulaServer.Middleware;
 using NebulaServer.Services;
 using NebulaServer.Services.Pairing;
 using NebulaServer.Services.Server;
@@ -105,15 +106,11 @@ if (!builder.Environment.IsDevelopment() && !builder.Environment.IsProduction())
     Directory.SetCurrentDirectory(AppContext.BaseDirectory);
 
     await using var app = builder.Build();
-    app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
-    {
-        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-        await context.Response.WriteAsJsonAsync(new
-        {
-            success = false,
-            error = "An unexpected server error occurred. Check the server logs for details."
-        });
-    }));
+
+    // Every failure leaves the server in one shape: success=false plus an error
+    // object that names the cause and the fix. See ErrorCatalog for the map.
+    app.UseMiddleware<ExceptionHandlingMiddleware>();
+    app.UseNebulaStatusCodeErrors();
     using (var scope = app.Services.CreateScope())
     {
         var pairing = scope.ServiceProvider.GetRequiredService<IPairingService>();

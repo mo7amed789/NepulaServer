@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using NebulaServer.Models.Media;
@@ -14,11 +15,16 @@ public class MediaController : ControllerBase
 {
     private readonly MediaExtractionEngine _extractionEngine;
     private readonly ILogger<MediaController> _logger;
+    private readonly IHostEnvironment _environment;
 
-    public MediaController(MediaExtractionEngine extractionEngine, ILogger<MediaController> logger)
+    public MediaController(
+        MediaExtractionEngine extractionEngine,
+        ILogger<MediaController> logger,
+        IHostEnvironment environment)
     {
         _extractionEngine = extractionEngine;
         _logger = logger;
+        _environment = environment;
     }
 
     [HttpGet("extract")]
@@ -33,7 +39,10 @@ public class MediaController : ControllerBase
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
             {
-                return BadRequest(new { error = "Invalid URL format." });
+                var invalid = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(
+                    400, HttpContext, $"'{url}' is not an absolute URL.",
+                    "Include the scheme, for example https://www.youtube.com/watch?v=... and URL-encode the query parameter.");
+                return StatusCode(invalid.Error.Status, invalid);
             }
 
             var result = await _extractionEngine.ExtractAsync(uri, ct);
@@ -47,16 +56,13 @@ public class MediaController : ControllerBase
         catch (MediaExtractionException ex)
         {
             _logger.LogWarning(ex, "Media extraction failed for {Url} with code {Code}", url, ex.Code);
-            
-            return BadRequest(new
-            {
-                success = false,
-                error = new
-                {
-                    code = ex.Code.ToString(),
-                    message = ex.Message
-                }
-            });
+
+            var payload = NebulaServer.Services.Errors.ErrorCatalog
+                .FromException(ex, HttpContext,
+                    NebulaServer.Services.Errors.ErrorCatalog.ShouldIncludeDetails(_environment))
+                .WithLegacyCode(ex.Code.ToString());
+
+            return StatusCode(payload.Error.Status, payload);
         }
         catch (Exception ex)
         {

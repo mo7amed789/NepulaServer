@@ -115,19 +115,30 @@ public static class EndpointRouteBuilderExtensions
             var data = JsonSerializer.Deserialize<JsonElement>(body);
             if (!data.TryGetProperty("licenseKey", out var keyProp))
             {
-                return Results.BadRequest(new { error = "Missing licenseKey" });
+                var missing = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(400, context,
+                    "The JSON body has no licenseKey field.");
+                return Results.Json(missing, statusCode: missing.Error.Status);
             }
 
             var licenseKey = keyProp.GetString();
             if (string.IsNullOrWhiteSpace(licenseKey))
             {
-                return Results.BadRequest(new { error = "License key cannot be empty" });
+                var empty = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(400, context,
+                    "licenseKey was present but empty.");
+                return Results.Json(empty, statusCode: empty.Error.Status);
             }
 
             var isValid = await licenseService.ValidateLicenseAsync(licenseKey);
             if (!isValid)
             {
-                return Results.BadRequest(new { error = "Invalid license key" });
+                var invalid = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(403, context,
+                    licenseService.IsLicensingServerConfigured
+                        ? "NebulaLicensingServer rejected this key: it is unknown, revoked, expired, or bound to a different machine."
+                        : "Licensing is not linked: Licensing:BaseUrl is empty in appsettings.json, so no key can be verified.",
+                    licenseService.IsLicensingServerConfigured
+                        ? "Check the key in the NebulaLicensingServer dashboard, confirm it is not revoked, and that it is bound to this machine. Keys are case sensitive."
+                        : "Set Licensing:BaseUrl to your NebulaLicensingServer origin (for example https://localhost:7087) and restart the server.");
+                return Results.Json(invalid, statusCode: invalid.Error.Status);
             }
 
             serverState.Update(state =>
