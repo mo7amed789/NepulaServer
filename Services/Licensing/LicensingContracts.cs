@@ -63,6 +63,7 @@ public sealed class ClientValidationResponse
     [JsonPropertyName("expiresAt")] public DateTime ExpiresAt { get; init; }
     [JsonPropertyName("daysRemaining")] public int DaysRemaining { get; init; }
     [JsonPropertyName("message")] public string Message { get; init; } = string.Empty;
+    [JsonPropertyName("machineName")] public string MachineName { get; init; } = string.Empty;
     [JsonPropertyName("signature")] public string Signature { get; init; } = string.Empty;
     [JsonPropertyName("signatureAlgorithm")] public string SignatureAlgorithm { get; init; } = "RSA-SHA256";
     [JsonPropertyName("signedAtUtc")] public DateTime SignedAtUtc { get; init; }

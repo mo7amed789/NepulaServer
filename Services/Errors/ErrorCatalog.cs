@@ -286,6 +286,19 @@ public static class ErrorCatalog
         return Build(statusCode, code, title, reason, fix, retryable, requestId, null, false);
     }
 
+    public static ApiErrorResponse LicenseRequired(HttpContext context, bool licensingConfigured)
+    {
+        var requestId = RequestId(context);
+        var reason = licensingConfigured
+            ? "This server is not activated yet. Downloads are disabled until a valid license key is activated."
+            : "Licensing is not configured on this server (Licensing:BaseUrl is empty), so downloads are disabled until it is linked and activated.";
+        var fix = licensingConfigured
+            ? "Open Settings -> License Activation in the desktop app, visit /setup, or POST a valid license key to /api/setup/license."
+            : "Set Licensing:BaseUrl in appsettings.json to your NebulaLicensingServer URL, restart the server, and activate a license key.";
+
+        return Build(403, "license_required", "Activation required", reason, fix, false, requestId, null, false);
+    }
+
     // =========================================================================
     // Helpers
     // =========================================================================

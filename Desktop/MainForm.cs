@@ -129,6 +129,7 @@ internal sealed partial class MainForm : Form
         // colors after the complete visual tree exists so dark startup matches
         // switching dark mode from Settings.
         ApplyThemeToControls(this);
+        UpdateLicenseUi(force: true);
 
         _clipboardMenuItem = new ToolStripMenuItem("Download copied media automatically")
         {
@@ -348,6 +349,12 @@ internal sealed partial class MainForm : Form
 
     private async Task QueueClipboardDownloadAsync(string url)
     {
+        if (!_services.GetRequiredService<LicenseService>().IsActivated)
+        {
+            _status.Text = "Clipboard download skipped: activate your license first.";
+            return;
+        }
+
         if (!_services.GetRequiredService<RecoveryStateService>().Get().IsComplete)
             throw new InvalidOperationException("The media engine is still starting.");
 

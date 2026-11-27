@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using NebulaServer.Models.Media;
+using NebulaServer.Services.Core;
+using NebulaServer.Services.Errors;
 using NebulaServer.Services.MediaExtraction;
 
 namespace NebulaServer.Controllers;
@@ -14,15 +16,18 @@ namespace NebulaServer.Controllers;
 public class MediaController : ControllerBase
 {
     private readonly MediaExtractionEngine _extractionEngine;
+    private readonly LicenseService _license;
     private readonly ILogger<MediaController> _logger;
     private readonly IHostEnvironment _environment;
 
     public MediaController(
         MediaExtractionEngine extractionEngine,
+        LicenseService license,
         ILogger<MediaController> logger,
         IHostEnvironment environment)
     {
         _extractionEngine = extractionEngine;
+        _license = license;
         _logger = logger;
         _environment = environment;
     }
@@ -30,6 +35,12 @@ public class MediaController : ControllerBase
     [HttpGet("extract")]
     public async Task<IActionResult> Extract([FromQuery] string url, CancellationToken ct)
     {
+        if (!_license.IsActivated)
+        {
+            var payload = ErrorCatalog.LicenseRequired(HttpContext, _license.IsLicensingServerConfigured);
+            return StatusCode(payload.Error.Status, payload);
+        }
+
         if (string.IsNullOrWhiteSpace(url))
         {
             return BadRequest(new { error = "Url is required." });

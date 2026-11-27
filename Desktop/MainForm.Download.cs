@@ -35,6 +35,7 @@ internal sealed partial class MainForm
     {
         var stack = Stack();
         var side = Stack();
+        stack.Controls.Add(BuildDownloadActivationBanner());
         var columns = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
         columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
         columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
@@ -213,6 +214,9 @@ internal sealed partial class MainForm
 
     private async Task QueueDownloadAsync()
     {
+        if (!EnsureActivatedForDownload())
+            return;
+
         if (!_services.GetRequiredService<RecoveryStateService>().Get().IsComplete)
             throw new InvalidOperationException("The media engine is still starting. Please try again in a moment.");
         var request = new JobRequest

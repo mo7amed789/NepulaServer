@@ -17,6 +17,7 @@ using NebulaServer.Models;
 using NebulaServer.Models.Dashboard;
 using NebulaServer.Models.Jobs;
 using NebulaServer.Services.Jobs;
+using NebulaServer.Services.Server;
 
 namespace NebulaServer.Services;
 
@@ -37,6 +38,7 @@ public class JobQueueManager : BackgroundService
     private readonly IDashboardEvents _dashboardEvents;
     private readonly JobStore _jobStore;
     private readonly PlaylistEventBus _playlistEventBus;
+    private readonly ServerStateService? _serverState;
 
     private readonly ConcurrentDictionary<string, DownloadJob> _jobs = new();
     private readonly Channel<string> _queue = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
@@ -62,7 +64,8 @@ public class JobQueueManager : BackgroundService
         StorageService storage,
         IDashboardEvents dashboardEvents,
         JobStore jobStore,
-        PlaylistEventBus playlistEventBus)
+        PlaylistEventBus playlistEventBus,
+        ServerStateService? serverState = null)
     {
         _logger = logger;
         _python = python;
@@ -70,6 +73,7 @@ public class JobQueueManager : BackgroundService
         _dashboardEvents = dashboardEvents;
         _jobStore = jobStore;
         _playlistEventBus = playlistEventBus;
+        _serverState = serverState;
         _keepDownloads = configuration.GetValue("Storage:KeepDownloads", false);
 
         var defaultWorkers = Environment.ProcessorCount >= 8 ? 4 : 3;
@@ -314,6 +318,17 @@ public class JobQueueManager : BackgroundService
         try
         {
             token.ThrowIfCancellationRequested();
+            if (_serverState is not null && !_serverState.Get().IsLicensed)
+            {
+                await TransitionTerminalStateAsync(
+                    job,
+                    JobState.FAILED,
+                    "FAILED",
+                    "Download blocked: server is not activated. Activate a valid license key first.",
+                    TransferEventType.JobFailed);
+                _playlistEventBus.Complete(job.JobId);
+                return;
+            }
             job.Message = "Preparing job metadata";
             PersistJob(job);
             await _dashboardEvents.JobProgress(job);

@@ -181,6 +181,22 @@
             </div>
         </section>
 
+        <!-- Activation Gate -->
+        <section id="activationGateCard" class="card hidden" style="border-color: var(--primary);">
+            <div class="card-header">
+                <div>
+                    <span class="section-kicker">ACTIVATION REQUIRED</span>
+                    <h2 class="card-title">Activate Tanzeel to download</h2>
+                    <p class="section-description">Downloads are disabled until this server is activated with a license key from NebulaLicensingServer.</p>
+                </div>
+            </div>
+            <form onsubmit="activateLicenseFromApp(event)" class="url-entry" style="margin-top: 8px;">
+                <input type="text" id="activationLicenseKey" class="input" placeholder="NBL-XXXX-XXXX-XXXX-XXXX" required autocomplete="off">
+                <button type="submit" class="btn btn-primary" id="btnActivateLicense">Activate license</button>
+            </form>
+            <div id="activationError" class="input-error-text" style="margin-top: 8px;"></div>
+        </section>
+
         <!-- Download Settings -->
         <main class="card download-card">
             <div class="card-header">
@@ -396,6 +412,7 @@
 
     <script>
         let globalPairingKey = '';
+        let isServerLicensed = false;
         let currentJobId = null;
         let isCurrentJobPlaylist = false;
         let signalRConnection = null;
@@ -996,6 +1013,9 @@
                     document.getElementById('serverId').textContent = pairData.serverId || '-';
                     document.getElementById('pairingKey').textContent = globalPairingKey.substring(0, 15) + '...';
                     setServerBadge(stateData.isServerRunning ? 'Connected' : 'Disconnected');
+                    if (typeof updateLicenseGate === 'function' && typeof stateData.isLicensed === 'boolean') {
+                        updateLicenseGate(stateData.isLicensed);
+                    }
                 } catch (_) {
                     controller.abort();
                     setServerBadge('Error');
@@ -1198,6 +1218,12 @@
         }
 
         async function startDownload() {
+            if (!isServerLicensed) {
+                showToast('Activation Required', 'Please activate a valid license key before starting downloads.', 'error');
+                const keyInput = document.getElementById('activationLicenseKey');
+                if (keyInput) keyInput.focus();
+                return;
+            }
             requestNotificationPermission();
 
             const urlInput = document.getElementById('videoUrl');
@@ -1535,6 +1561,50 @@
             } catch(e) {}
             finally {
                 btn.disabled = false;
+            }
+        }
+
+        function updateLicenseGate(licensed) {
+            isServerLicensed = Boolean(licensed);
+            const gateCard = document.getElementById('activationGateCard');
+            const btnStart = document.getElementById('btnStart');
+            if (gateCard) gateCard.classList.toggle('hidden', isServerLicensed);
+            if (btnStart && !currentJobId) {
+                btnStart.disabled = !isServerLicensed;
+                btnStart.title = isServerLicensed ? '' : 'Activate a valid license key to unlock downloads';
+            }
+        }
+
+        async function activateLicenseFromApp(event) {
+            event.preventDefault();
+            const keyInput = document.getElementById('activationLicenseKey');
+            const btn = document.getElementById('btnActivateLicense');
+            const err = document.getElementById('activationError');
+            const licenseKey = (keyInput.value || '').trim();
+            if (!licenseKey) return;
+
+            err.style.display = 'none';
+            btn.disabled = true;
+            btn.textContent = 'Activating...';
+            try {
+                const res = await fetch('/api/setup/license', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ licenseKey })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    const msg = (data.error && (data.error.reason || data.error.title)) || data.message || 'Activation failed';
+                    throw new Error(msg);
+                }
+                updateLicenseGate(true);
+                showToast('License Activated', 'Downloads are now unlocked.', 'success');
+            } catch (e) {
+                err.textContent = e.message;
+                err.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Activate license';
             }
         }
 

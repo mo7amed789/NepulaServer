@@ -11,7 +11,7 @@
     <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.9" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
     <Compile Include="Program.cs;Dependencies.cs" />
-    <Compile Include="../../Services/JobQueueManager.cs;../../Services/Dashboard/IDashboardEvents.cs;../../Services/Jobs/EngineProtocolParser.cs;../../Services/Jobs/TransferManifestHelper.cs;../../Services/Jobs/JobStore.cs;../../Services/PlaylistEventBus.cs" />
+    <Compile Include="../../Services/JobQueueManager.cs;../../Services/Dashboard/IDashboardEvents.cs;../../Services/Jobs/EngineProtocolParser.cs;../../Services/Jobs/TransferManifestHelper.cs;../../Services/Jobs/JobStore.cs;../../Services/PlaylistEventBus.cs;../../Services/Server/ServerStateService.cs;../../Services/Server/ServerState.cs" />
     <Compile Include="../../Models/DownloadJob.cs;../../Models/JobRequest.cs;../../Models/JobState.cs;../../Models/Dashboard/QueueStatistics.cs" />
     <Compile Include="../../Models/Jobs/JobSnapshot.cs;../../Models/Jobs/TransferSnapshot.cs;../../Models/Jobs/TransferEventRecord.cs;../../Models/Jobs/TransferEventType.cs;../../Models/Jobs/TransferState.cs;../../Models/Jobs/PlaylistItemResult.cs;../../Models/Jobs/DownloadProgress.cs" />
     <Using Include="Microsoft.Extensions.Logging" />

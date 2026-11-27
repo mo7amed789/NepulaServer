@@ -5,6 +5,8 @@ using NebulaServer.Helpers;
 using NebulaServer.Models;
 using NebulaServer.Models.Jobs;
 using NebulaServer.Services;
+using NebulaServer.Services.Core;
+using NebulaServer.Services.Errors;
 using NebulaServer.Services.Jobs;
 using NebulaServer.Services.Server;
 using System;
@@ -25,6 +27,7 @@ public class JobsController : ControllerBase
     private readonly ServerStateService _serverState;
     private readonly JobStore _store;
     private readonly DuplicateDownloadGuard _duplicates;
+    private readonly LicenseService _license;
     private readonly ILogger<JobsController> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IHostEnvironment _environment;
@@ -36,6 +39,7 @@ public class JobsController : ControllerBase
         ServerStateService serverState,
         JobStore store,
         DuplicateDownloadGuard duplicates,
+        LicenseService license,
         ILogger<JobsController> logger,
         IHttpClientFactory httpClientFactory,
         IHostEnvironment environment)
@@ -46,9 +50,19 @@ public class JobsController : ControllerBase
         _serverState = serverState;
         _store = store;
         _duplicates = duplicates;
+        _license = license;
         _logger = logger;
         _environment = environment;
         _httpClientFactory = httpClientFactory;
+    }
+
+    private ObjectResult? RejectIfUnlicensed()
+    {
+        if (_license.IsActivated)
+            return null;
+
+        var payload = ErrorCatalog.LicenseRequired(HttpContext, _license.IsLicensingServerConfigured);
+        return StatusCode(payload.Error.Status, payload);
     }
 
     [HttpGet("info")]
@@ -210,6 +224,9 @@ public class JobsController : ControllerBase
     [HttpPost]
     public ActionResult<JobStatusResponse> CreateJob([FromBody] JobRequest request)
     {
+        if (RejectIfUnlicensed() is { } licenseError)
+            return licenseError;
+
         if (string.IsNullOrWhiteSpace(request.Url))
             return BadRequest("Url is required");
 
@@ -352,6 +369,9 @@ public class JobsController : ControllerBase
     [HttpGet("{id}/download")]
     public IActionResult DownloadFile(string id, [FromQuery] bool archive = false)
     {
+        if (RejectIfUnlicensed() is { } licenseError)
+            return licenseError;
+
         _logger.LogWarning("=== DOWNLOAD ENDPOINT HIT === JobId={JobId}", id);
         var job = _jobs.GetJob(id);
         JobSnapshot? historyJob = null;
@@ -457,6 +477,9 @@ public class JobsController : ControllerBase
     [HttpGet("{id}/download/{index:int}")]
     public async Task<IActionResult> DownloadPlaylistItem(string id, int index)
     {
+        if (RejectIfUnlicensed() is { } licenseError)
+            return licenseError;
+
         var job = _jobs.GetJob(id);
 
         if (job == null) return NotFound("Job not found.");
@@ -485,6 +508,9 @@ public class JobsController : ControllerBase
     [HttpGet("{id}/download/next")]
     public async Task<IActionResult> DownloadNextPlaylistItem(string id)
     {
+        if (RejectIfUnlicensed() is { } licenseError)
+            return licenseError;
+
         var job = _jobs.GetJob(id);
 
         if (job == null) return NotFound("Job not found.");

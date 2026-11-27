@@ -65,6 +65,7 @@ internal sealed partial class MainForm
         var retry = Button("Retry", () => { });
         retry.Click += async (_, _) => await BusyAsync(retry, async () =>
         {
+            if (!EnsureActivatedForDownload()) return;
             var row = SelectedJob();
             if (row.State is not ("FAILED" or "CANCELED")) throw new InvalidOperationException("Only failed or canceled downloads can be retried.");
             var request = JsonSerializer.Deserialize<JobRequest>(row.Snapshot.RequestJson) ?? throw new InvalidOperationException("The original download options are missing.");
@@ -130,9 +131,13 @@ internal sealed partial class MainForm
             }
             RenderQueue();
             RenderOverview(snapshot.dashboard);
+            UpdateLicenseUi();
             var runtime = snapshot.dashboard.Runtime;
-            _sidebarStatus.Text = runtime.PythonReady ? "●  Engine ready" : "●  Engine starting";
-            _status.Text = $"{(runtime.PythonReady ? "●  Engine ready" : "◌  Engine starting")}     ·     {snapshot.dashboard.Queue.RunningJobs} active     ·     {snapshot.dashboard.Queue.QueuedJobs} queued     ·     {snapshot.dashboard.Storage.FreeSpaceBytes / 1073741824d:0.0} GB free";
+            var licensed = _services.GetRequiredService<NebulaServer.Services.Core.LicenseService>().IsActivated;
+            _sidebarStatus.Text = !licensed
+                ? "●  Activation required"
+                : runtime.PythonReady ? "●  Engine ready" : "●  Engine starting";
+            _status.Text = $"{(licensed ? (runtime.PythonReady ? "●  Engine ready" : "◌  Engine starting") : "◌  Activation required")}     ·     {snapshot.dashboard.Queue.RunningJobs} active     ·     {snapshot.dashboard.Queue.QueuedJobs} queued     ·     {snapshot.dashboard.Storage.FreeSpaceBytes / 1073741824d:0.0} GB free";
         }
         catch (OperationCanceledException) when (_closing.IsCancellationRequested) { }
         catch (Exception ex)

@@ -238,11 +238,28 @@
             } catch (e) { }
         }
 
+        async function initSetupPage() {
+            try {
+                const res = await fetch('/api/setup/status');
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.isLicensed) {
+                    document.getElementById('licenseSection').style.display = 'none';
+                    document.getElementById('pairingSection').style.display = 'block';
+                    applySetupStatus(data);
+                } else if (data.licensingConfigured === false) {
+                    const errorDiv = document.getElementById('licenseError');
+                    errorDiv.textContent = 'Licensing:BaseUrl is empty in appsettings.json. Configure the licensing server URL and restart.';
+                    errorDiv.style.display = 'block';
+                }
+            } catch (_) { }
+        }
+
         async function submitLicense(e) {
             e.preventDefault();
             const btn = document.getElementById('submitLicenseBtn');
             const errorDiv = document.getElementById('licenseError');
-            const key = document.getElementById('licenseKey').value;
+            const key = document.getElementById('licenseKey').value.trim();
             
             errorDiv.style.display = 'none';
             btn.disabled = true;
@@ -256,8 +273,9 @@
                 });
                 
                 if (!res.ok) {
-                    const data = await res.json();
-                    throw new Error(data.error || 'Failed to activate license');
+                    const data = await res.json().catch(() => ({}));
+                    const msg = (data.error && (data.error.reason || data.error.title)) || data.message || 'Failed to activate license';
+                    throw new Error(msg);
                 }
                 
                 // Success
@@ -272,6 +290,8 @@
                 btn.textContent = 'Activate License';
             }
         }
+
+        initSetupPage();
     </script>
     <script src="/static/animations.min.js"></script>
 </body>

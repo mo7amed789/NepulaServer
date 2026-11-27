@@ -160,17 +160,9 @@ if (!builder.Environment.IsDevelopment() && !builder.Environment.IsProduction())
             StartupHelper.GetExecutablePath());
     }
     var initialState = await app.Services.GetRequiredService<ServerStateFileService>().LoadAsync();
-    var isLicensed = initialState?.IsLicensed ?? false;
-    if (initialState != null)
-    {
-        app.Services.GetRequiredService<ServerStateService>().Update(s =>
-        {
-            s.IsLicensed = initialState.IsLicensed;
-            s.LicenseKey = initialState.LicenseKey;
-        });
-    }
-    // License activation is no longer a startup gate; the desktop app opens the
-    // main dashboard on every launch. API authentication is intentionally disabled.
+    var configuredLicenseKey = app.Configuration["Licensing:LicenseKey"];
+    app.Services.GetRequiredService<NebulaServer.Services.Core.LicenseService>()
+        .RestoreStartupState(initialState, configuredLicenseKey);
 
     if (headless)
     {

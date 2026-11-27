@@ -5,6 +5,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using NebulaServer.Models.ImageEngine;
+using NebulaServer.Services.Core;
+using NebulaServer.Services.Errors;
 using NebulaServer.Services.ImageEngine;
 
 namespace NebulaServer.Controllers
@@ -15,11 +17,25 @@ namespace NebulaServer.Controllers
     {
         private readonly ImageExtractionEngine _extractionEngine;
         private readonly ImageDownloadManager _downloadManager;
+        private readonly LicenseService _license;
 
-        public ImageEngineController(ImageExtractionEngine extractionEngine, ImageDownloadManager downloadManager)
+        public ImageEngineController(
+            ImageExtractionEngine extractionEngine,
+            ImageDownloadManager downloadManager,
+            LicenseService license)
         {
             _extractionEngine = extractionEngine;
             _downloadManager = downloadManager;
+            _license = license;
+        }
+
+        private ObjectResult? RejectIfUnlicensed()
+        {
+            if (_license.IsActivated)
+                return null;
+
+            var payload = ErrorCatalog.LicenseRequired(HttpContext, _license.IsLicensingServerConfigured);
+            return StatusCode(payload.Error.Status, payload);
         }
 
         public class AnalyzeRequest
@@ -31,6 +47,9 @@ namespace NebulaServer.Controllers
         [HttpPost("analyze")]
         public async Task<IActionResult> AnalyzeAsync([FromBody] AnalyzeRequest request, CancellationToken cancellationToken)
         {
+            if (RejectIfUnlicensed() is { } licenseError)
+                return licenseError;
+
             if (!Uri.TryCreate(request.Url, UriKind.Absolute, out var uri))
             {
                 var invalidUrl = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(400, HttpContext,
@@ -79,6 +98,9 @@ namespace NebulaServer.Controllers
         [HttpPost("download")]
         public async Task<IActionResult> DownloadAsync([FromBody] DownloadRequest request, CancellationToken cancellationToken)
         {
+            if (RejectIfUnlicensed() is { } licenseError)
+                return licenseError;
+
             if (!Uri.TryCreate(request.Url, UriKind.Absolute, out var uri))
             {
                 var invalidUrl = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(400, HttpContext,

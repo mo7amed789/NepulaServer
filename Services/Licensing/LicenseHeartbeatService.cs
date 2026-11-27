@@ -43,6 +43,7 @@ public sealed class LicenseHeartbeatService : BackgroundService
     {
         if (!_options.IsConfigured)
         {
+            Apply(licensed: false, string.Empty);
             _logger.LogInformation("Licensing server link disabled (Licensing:BaseUrl is empty).");
             return;
         }
@@ -57,10 +58,10 @@ public sealed class LicenseHeartbeatService : BackgroundService
             "Licensing link enabled: {BaseUrl}, machine hash {Hash}, heartbeat every {Minutes} min",
             _options.BaseUrl, LicenseService.Mask(_client.MachineHash), interval.TotalMinutes);
 
-        // First pass shortly after startup so the UI settles first.
+        // First pass right after startup so activation state is authoritative immediately.
         try
         {
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(250), stoppingToken);
         }
         catch (OperationCanceledException)
         {
@@ -98,6 +99,7 @@ public sealed class LicenseHeartbeatService : BackgroundService
         var licenseKey = ResolveLicenseKey();
         if (string.IsNullOrWhiteSpace(licenseKey))
         {
+            Apply(licensed: false, string.Empty);
             _logger.LogDebug("No license key stored yet; skipping license check.");
             return;
         }
@@ -113,7 +115,11 @@ public sealed class LicenseHeartbeatService : BackgroundService
 
             var hb = await _licenseService.HeartbeatAsync(licenseKey, ct);
             if (!hb.IsValid)
-                _logger.LogDebug("Heartbeat not accepted: {Status} {Message}", hb.Status, hb.Message);
+            {
+                _logger.LogWarning("Heartbeat rejected: {Status} {Message}", hb.Status, hb.Message);
+                if (hb.ReachedServer)
+                    Apply(licensed: false, licenseKey);
+            }
             return;
         }
 

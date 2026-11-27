@@ -59,9 +59,22 @@ public sealed class LicensingClient : IDisposable
 
     public string ServerId => _systemInfo.DeviceId;
 
-    public string DeviceName => string.IsNullOrWhiteSpace(_options.DeviceName)
-        ? Environment.MachineName
-        : _options.DeviceName;
+    public string DeviceName
+    {
+        get
+        {
+            var configured = string.IsNullOrWhiteSpace(_options.DeviceName)
+                ? Environment.MachineName
+                : _options.DeviceName.Trim();
+            return string.IsNullOrWhiteSpace(configured) ? "NebulaServer" : configured;
+        }
+    }
+
+    public string NebulaVersion => string.IsNullOrWhiteSpace(_options.NebulaVersion)
+        ? "1.0.0"
+        : _options.NebulaVersion.Trim();
+
+    public string BaseUrl => _options.BaseUrl;
 
     /// <summary>Activation data persisted locally, if any.</summary>
     public LicenseBinding? Binding => _binding ??= LicenseBindingStore.Load();
@@ -71,12 +84,13 @@ public sealed class LicensingClient : IDisposable
         if (!IsConfigured)
             return LicenseCheckResult.Offline("Licensing server URL is not configured.");
 
+        var normalizedKey = licenseKey.Trim();
         var request = new ClientActivateRequest
         {
-            LicenseKey = licenseKey,
+            LicenseKey = normalizedKey,
             MachineHash = MachineHash,
             DeviceName = DeviceName,
-            NebulaVersion = _options.NebulaVersion,
+            NebulaVersion = NebulaVersion,
             ServerId = ServerId
         };
 
@@ -92,17 +106,33 @@ public sealed class LicensingClient : IDisposable
                 ReachedServer: reached, ErrorCode: envelope?.ErrorCode);
         }
 
-        // The activation response is signed over the values we sent plus the
-        // server's dates, so it can be verified without any local state.
-        var verified = VerifySignatureWithDateVariants(
-            data.LicenseKey, MachineHash, DeviceName, _options.NebulaVersion, ServerId,
-            data.ExpiresAt, data.SignedAtUtc, data.OfflineGraceUntilUtc, activated: true, data.Signature);
-
-        if (envelope is null || !data.Success)
+        if (envelope is null || !envelope.Success || !data.Success)
         {
-            var message = envelope?.Message ?? data.Message;
+            var message = !string.IsNullOrWhiteSpace(envelope?.Message) ? envelope.Message : data.Message;
+            if (string.IsNullOrWhiteSpace(message))
+                message = "License activation refused.";
             _logger.LogWarning("License activation refused: {Message}", message);
             return new LicenseCheckResult(false, data.Status, message, ReachedServer: true, ErrorCode: envelope?.ErrorCode);
+        }
+
+        var signedDeviceName = !string.IsNullOrEmpty(data.MachineName) ? data.MachineName : DeviceName;
+
+        // The activation response is signed over the stored device name plus the
+        // server's dates, so it can be verified without any prior local state.
+        var verified = VerifySignatureWithDateVariants(
+            data.LicenseKey, MachineHash, signedDeviceName, NebulaVersion, ServerId,
+            data.ExpiresAt, data.SignedAtUtc, data.OfflineGraceUntilUtc, activated: true, data.Signature);
+
+        if (!verified && string.IsNullOrWhiteSpace(_options.PublicKeyPem))
+        {
+            // Server keypair may have rotated since our cached public key was saved.
+            _publicKeyPem = null;
+            if (GetPublicKeyPem(forceRefresh: true) is not null)
+            {
+                verified = VerifySignatureWithDateVariants(
+                    data.LicenseKey, MachineHash, signedDeviceName, NebulaVersion, ServerId,
+                    data.ExpiresAt, data.SignedAtUtc, data.OfflineGraceUntilUtc, activated: true, data.Signature);
+            }
         }
 
         if (_options.RequireSignature && !verified)
@@ -116,17 +146,17 @@ public sealed class LicensingClient : IDisposable
         {
             LicenseKey = data.LicenseKey,
             MachineHash = MachineHash,
-            DeviceName = DeviceName,
+            DeviceName = signedDeviceName,
             ServerId = ServerId,
             ActivatedAtUtc = DateTime.UtcNow,
-            ExpiresAt = data.ExpiresAt,
-            OfflineGraceUntilUtc = data.OfflineGraceUntilUtc
+            ExpiresAt = NormalizeUtc(data.ExpiresAt),
+            OfflineGraceUntilUtc = NormalizeUtc(data.OfflineGraceUntilUtc)
         };
         LicenseBindingStore.Save(_binding);
 
         _logger.LogInformation(
             "License {Key} activated for {Device}; expires {Expires:u}, signature verified: {Verified}",
-            data.LicenseKey, DeviceName, data.ExpiresAt, verified);
+            data.LicenseKey, signedDeviceName, data.ExpiresAt, verified);
 
         return new LicenseCheckResult(true, data.Status, "License activated.", data.ExpiresAt,
             data.OfflineGraceUntilUtc, verified);
@@ -137,11 +167,12 @@ public sealed class LicensingClient : IDisposable
         if (!IsConfigured)
             return LicenseCheckResult.Offline("Licensing server URL is not configured.");
 
+        var normalizedKey = licenseKey.Trim();
         var request = new ClientValidateRequest
         {
-            LicenseKey = licenseKey,
+            LicenseKey = normalizedKey,
             MachineHash = MachineHash,
-            NebulaVersion = _options.NebulaVersion,
+            NebulaVersion = NebulaVersion,
             ServerId = ServerId
         };
 
@@ -155,33 +186,57 @@ public sealed class LicensingClient : IDisposable
                 ReachedServer: reached, ErrorCode: envelope?.ErrorCode);
         }
 
-        if (!data.IsValid)
-            return new LicenseCheckResult(false, data.Status, data.Message, data.ExpiresAt,
-                data.OfflineGraceUntilUtc, ReachedServer: true, ErrorCode: envelope?.ErrorCode);
+        if (envelope is null || !envelope.Success || !data.IsValid)
+            return new LicenseCheckResult(false, data.Status,
+                string.IsNullOrWhiteSpace(data.Message) ? (envelope?.Message ?? "Validation failed.") : data.Message,
+                data.ExpiresAt, data.OfflineGraceUntilUtc, ReachedServer: true, ErrorCode: envelope?.ErrorCode);
 
-        // Validate signs the device name stored on the server, which the
-        // response does not echo; it is read back from the activation binding.
-        var deviceName = Binding?.DeviceName;
-        if (string.IsNullOrEmpty(deviceName))
-            deviceName = DeviceName;
+        // Prefer the echoed machine name from the server response, falling back
+        // to the persisted activation binding or local device name.
+        var deviceName = !string.IsNullOrEmpty(data.MachineName)
+            ? data.MachineName
+            : (!string.IsNullOrEmpty(Binding?.DeviceName) ? Binding.DeviceName : DeviceName);
 
         var verified = VerifySignatureWithDateVariants(
-            licenseKey, MachineHash, deviceName, _options.NebulaVersion, ServerId,
+            normalizedKey, MachineHash, deviceName, NebulaVersion, ServerId,
             data.ExpiresAt, data.SignedAtUtc, data.OfflineGraceUntilUtc, activated: true, data.Signature);
+
+        if (!verified && string.IsNullOrWhiteSpace(_options.PublicKeyPem))
+        {
+            _publicKeyPem = null;
+            if (GetPublicKeyPem(forceRefresh: true) is not null)
+            {
+                verified = VerifySignatureWithDateVariants(
+                    normalizedKey, MachineHash, deviceName, NebulaVersion, ServerId,
+                    data.ExpiresAt, data.SignedAtUtc, data.OfflineGraceUntilUtc, activated: true, data.Signature);
+            }
+        }
 
         if (_options.RequireSignature && !verified)
         {
             // A stored device name is required to verify: report, do not brick.
             _logger.LogWarning(
-                "License validation signature could not be verified (device name '{Device}' from local binding). " +
+                "License validation signature could not be verified (device name '{Device}'). " +
                 "Activate again to refresh the binding.", deviceName);
             return new LicenseCheckResult(false, "UnverifiedSignature",
                 "Validation response signature did not verify.", data.ExpiresAt, data.OfflineGraceUntilUtc,
                 ReachedServer: true);
         }
 
+        _binding = new LicenseBinding
+        {
+            LicenseKey = normalizedKey,
+            MachineHash = MachineHash,
+            DeviceName = deviceName,
+            ServerId = ServerId,
+            ActivatedAtUtc = Binding?.ActivatedAtUtc ?? DateTime.UtcNow,
+            ExpiresAt = NormalizeUtc(data.ExpiresAt),
+            OfflineGraceUntilUtc = NormalizeUtc(data.OfflineGraceUntilUtc)
+        };
+        LicenseBindingStore.Save(_binding);
+
         _logger.LogInformation("License {Key} valid; expires {Expires:u}; {Days} day(s) remaining",
-            licenseKey, data.ExpiresAt, data.DaysRemaining);
+            normalizedKey, data.ExpiresAt, data.DaysRemaining);
 
         return new LicenseCheckResult(true, data.Status, data.Message, data.ExpiresAt,
             data.OfflineGraceUntilUtc, verified);
@@ -194,16 +249,16 @@ public sealed class LicensingClient : IDisposable
 
         var request = new ClientHeartbeatRequest
         {
-            LicenseKey = licenseKey,
+            LicenseKey = licenseKey.Trim(),
             MachineHash = MachineHash,
-            NebulaVersion = _options.NebulaVersion,
+            NebulaVersion = NebulaVersion,
             ServerId = ServerId,
             CurrentTimeUtc = DateTime.UtcNow
         };
 
         var (envelope, error, reached) = await PostAsync<ClientHeartbeatResponse>("api/client/heartbeat", request, ct);
-        if (envelope?.Data is null)
-            return new LicenseCheckResult(false, reached ? "Rejected" : "Offline",
+        if (envelope is null || !envelope.Success || envelope.Data is null)
+            return new LicenseCheckResult(false, envelope?.Data?.Status ?? (reached ? "Rejected" : "Offline"),
                 error ?? envelope?.Message ?? "Heartbeat failed.",
                 ReachedServer: reached, ErrorCode: envelope?.ErrorCode);
 
@@ -211,8 +266,9 @@ public sealed class LicensingClient : IDisposable
     }
 
     /// <summary>
-    /// Activate, then validate. Activation is tried first because a key that has
-    /// never been bound to this machine cannot be validated.
+    /// Validate first; if the key has not been activated yet, activate it on
+    /// this machine. Hard rejections (NotFound, Revoked, Expired,
+    /// MachineMismatch) are returned immediately.
     /// </summary>
     public async Task<LicenseCheckResult> ActivateOrValidateAsync(string licenseKey, CancellationToken ct = default)
     {
@@ -220,15 +276,17 @@ public sealed class LicensingClient : IDisposable
         if (validation.IsValid)
             return validation;
 
-        if (validation.ReachedServer && validation.Status is "UnverifiedSignature")
+        if (validation.ReachedServer &&
+            validation.Status is "UnverifiedSignature" or "NotFound" or "Revoked" or "Expired" or "MachineMismatch")
             return validation;
 
         var activation = await ActivateAsync(licenseKey, ct);
         if (activation.IsValid)
             return activation;
 
-        // Already bound to this machine: report the original validation answer.
-        return validation.ReachedServer ? validation : activation;
+        return validation.ReachedServer && validation.Status != "NotActivated"
+            ? validation
+            : activation;
     }
 
     private async Task<(ApiEnvelope<T>? Envelope, string? Error, bool ReachedServer)> PostAsync<T>(
@@ -362,16 +420,24 @@ public sealed class LicensingClient : IDisposable
         return false;
     }
 
-    private string? GetPublicKeyPem()
+    private static DateTime NormalizeUtc(DateTime value) =>
+        value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
+
+    private string? GetPublicKeyPem(bool forceRefresh = false)
     {
         if (!string.IsNullOrWhiteSpace(_options.PublicKeyPem))
             return _options.PublicKeyPem.Trim();
 
-        if (_publicKeyPem is not null)
+        if (!forceRefresh && _publicKeyPem is not null)
             return _publicKeyPem;
 
         var cached = Path.Combine(RuntimePaths.Data, "license-public-key.pem");
-        if (File.Exists(cached))
+        if (!forceRefresh && File.Exists(cached))
         {
             _publicKeyPem = File.ReadAllText(cached).Trim();
             return _publicKeyPem;
@@ -382,6 +448,7 @@ public sealed class LicensingClient : IDisposable
             var pem = _http.GetStringAsync("api/client/public-key").GetAwaiter().GetResult().Trim();
             if (pem.Contains("BEGIN", StringComparison.Ordinal))
             {
+                Directory.CreateDirectory(RuntimePaths.Data);
                 File.WriteAllText(cached, pem);
                 _publicKeyPem = pem;
                 return pem;
@@ -391,6 +458,10 @@ public sealed class LicensingClient : IDisposable
         {
             _logger.LogWarning(ex, "Could not fetch the licensing server public key.");
         }
+
+        var bundled = Path.Combine(AppContext.BaseDirectory, "Keys", "public.pem");
+        if (File.Exists(bundled))
+            return File.ReadAllText(bundled).Trim();
 
         return null;
     }

@@ -72,6 +72,8 @@ internal sealed partial class MainForm
     private Control BuildSettingsPage()
     {
         var stack = Stack();
+        var licenseCard = BuildLicenseSettingsCard();
+        stack.Controls.Add(licenseCard);
         var behavior = Card("Desktop behavior");
         var close = new ToggleSwitch { Text = "Keep running in the system tray when I close the window", Dock = DockStyle.Top, Width = 550, Checked = _preferences.CloseToTray, Margin = new Padding(0, 8, 0, 12) };
         close.CheckedChanged += (_, _) => { _preferences.CloseToTray = close.Checked; SavePreferences(); };
@@ -114,7 +116,7 @@ internal sealed partial class MainForm
         about.Controls.Add(Label("Settings are saved automatically. Your existing download history is preserved.", 9));
         stack.Controls.Add(about);
         var page = ScrollPage(stack);
-        var sections = Row(Button("Desktop behavior", () => page.ScrollControlIntoView(behavior)), Button("Your files", () => page.ScrollControlIntoView(files)), Button("YouTube & Cookies", () => page.ScrollControlIntoView(cookiesCard)), Button("Shortcuts", () => page.ScrollControlIntoView(about)));
+        var sections = Row(Button("License & Activation", () => page.ScrollControlIntoView(licenseCard)), Button("Desktop behavior", () => page.ScrollControlIntoView(behavior)), Button("Your files", () => page.ScrollControlIntoView(files)), Button("YouTube & Cookies", () => page.ScrollControlIntoView(cookiesCard)), Button("Shortcuts", () => page.ScrollControlIntoView(about)));
         var layout = new Panel();
         page.Dock = DockStyle.Fill; sections.Dock = DockStyle.Top;
         layout.Controls.Add(page); layout.Controls.Add(sections);

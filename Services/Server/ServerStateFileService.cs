@@ -1,4 +1,5 @@
 using System.Text.Json;
+using NebulaServer.Helpers;
 
 namespace NebulaServer.Services.Server;
 
@@ -13,10 +14,7 @@ public sealed class ServerStateFileService
 
     public ServerStateFileService()
     {
-        _filePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "Nebula Server",
-            "server.json");
+        _filePath = Path.Combine(RuntimePaths.Data, "server.json");
     }
 
     public async Task SaveAsync(ServerState state)

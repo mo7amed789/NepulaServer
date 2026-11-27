@@ -36,6 +36,7 @@ internal sealed partial class MainForm
         async Task RunImages(Func<CancellationToken, Task> action)
         {
             if (_imageOperation != null) return;
+            if (!EnsureActivatedForDownload()) return;
             using var operation = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
             _imageOperation = operation;
             analyze.Enabled = preview.Enabled = save.Enabled = false;

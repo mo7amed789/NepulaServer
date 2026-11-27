@@ -17,13 +17,12 @@ public static class EndpointRouteBuilderExtensions
         var embedJsonOptions = new JsonSerializerOptions { Encoder = JavaScriptEncoder.Default };
         var appPagePath = Path.Combine(AppContext.BaseDirectory, "Html", "app.min.html");
         var imagesPagePath = Path.Combine(AppContext.BaseDirectory, "Html", "images.min.html");
+        var setupPagePath = Path.Combine(AppContext.BaseDirectory, "Html", "setup.min.html");
         app.MapHub<DashboardHub>("/dashboardHub");
         app.MapControllers();
 
-        // Open the main application directly.  Keep the legacy setup URL as a
-        // redirect so old shortcuts do not send users back to the license page.
         app.MapGet("/", () => Results.Redirect("/app"));
-        app.MapGet("/setup", () => Results.Redirect("/app"));
+        app.MapGet("/setup", () => PageFile(setupPagePath));
 
         app.MapGet("/app", () =>
         {
@@ -81,6 +80,7 @@ public static class EndpointRouteBuilderExtensions
             HttpContext context,
             SystemInfoService sysInfo,
             ServerStateService serverState,
+            LicenseService licenseService,
             IPairingService pairingService,
             CancellationToken ct) =>
         {
@@ -99,14 +99,15 @@ public static class EndpointRouteBuilderExtensions
                 localIp = sysInfo.GetLocalIpAddress(),
                 deviceId = sysInfo.DeviceId,
                 port = sysInfo.Port,
+                isLicensed = state.IsLicensed,
+                licensingConfigured = licenseService.IsLicensingServerConfigured,
+                machineHash = licenseService.MachineHash,
                 qrPayload
             }, embedJsonOptions, contentType: "application/json", statusCode: 200);
         });
         app.MapPost("/api/setup/license", async (
             HttpContext context,
             LicenseService licenseService,
-            ServerStateService serverState,
-            ServerStateFileService fileService,
             CancellationToken ct) =>
         {
             using var reader = new StreamReader(context.Request.Body);
@@ -120,7 +121,7 @@ public static class EndpointRouteBuilderExtensions
                 return Results.Json(missing, statusCode: missing.Error.Status);
             }
 
-            var licenseKey = keyProp.GetString();
+            var licenseKey = keyProp.GetString()?.Trim();
             if (string.IsNullOrWhiteSpace(licenseKey))
             {
                 var empty = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(400, context,
@@ -128,28 +129,26 @@ public static class EndpointRouteBuilderExtensions
                 return Results.Json(empty, statusCode: empty.Error.Status);
             }
 
-            var isValid = await licenseService.ValidateLicenseAsync(licenseKey);
-            if (!isValid)
+            var result = await licenseService.ActivateAndPersistAsync(licenseKey, ct);
+            if (!result.IsValid)
             {
-                var invalid = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(403, context,
-                    licenseService.IsLicensingServerConfigured
-                        ? "NebulaLicensingServer rejected this key: it is unknown, revoked, expired, or bound to a different machine."
-                        : "Licensing is not linked: Licensing:BaseUrl is empty in appsettings.json, so no key can be verified.",
-                    licenseService.IsLicensingServerConfigured
-                        ? "Check the key in the NebulaLicensingServer dashboard, confirm it is not revoked, and that it is bound to this machine. Keys are case sensitive."
-                        : "Set Licensing:BaseUrl to your NebulaLicensingServer origin (for example https://localhost:7087) and restart the server.");
+                var reason = licenseService.IsLicensingServerConfigured
+                    ? result.Message
+                    : "Licensing is not linked: Licensing:BaseUrl is empty in appsettings.json, so no key can be verified.";
+                var fix = licenseService.IsLicensingServerConfigured
+                    ? "Check the key in the NebulaLicensingServer dashboard, confirm it is not revoked or expired, and that it is bound to this machine."
+                    : "Set Licensing:BaseUrl to your NebulaLicensingServer origin (for example https://localhost:7087) and restart the server.";
+                var invalid = NebulaServer.Services.Errors.ErrorCatalog.FromStatusCode(403, context, reason, fix);
                 return Results.Json(invalid, statusCode: invalid.Error.Status);
             }
 
-            serverState.Update(state =>
+            return Results.Ok(new
             {
-                state.IsLicensed = true;
-                state.LicenseKey = licenseKey;
+                success = true,
+                status = result.Status,
+                expiresAt = result.ExpiresAt,
+                message = result.Message
             });
-
-            await fileService.SaveAsync(serverState.Get());
-
-            return Results.Ok(new { success = true });
         });
     }
 

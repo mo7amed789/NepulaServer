@@ -231,6 +231,22 @@
             </div>
         </header>
 
+        <!-- Activation Gate -->
+        <section id="activationGateCard" class="card hidden" style="border-color: var(--primary);">
+            <div class="card-header">
+                <div>
+                    <span class="section-kicker">ACTIVATION REQUIRED</span>
+                    <h2 class="card-title">Activate Tanzeel to download images</h2>
+                    <p class="section-description">Image downloads are disabled until this server is activated with a license key.</p>
+                </div>
+            </div>
+            <form onsubmit="activateLicenseFromImages(event)" class="url-entry" style="margin-top: 8px;">
+                <input type="text" id="activationLicenseKey" class="input" placeholder="NBL-XXXX-XXXX-XXXX-XXXX" required autocomplete="off">
+                <button type="submit" class="btn btn-primary" id="btnActivateLicense">Activate license</button>
+            </form>
+            <div id="activationError" class="input-error-text" style="margin-top: 8px;"></div>
+        </section>
+
         <!-- URL Input -->
         <main class="card image-workbench">
             <div class="card-header">
@@ -309,16 +325,66 @@
     <script>
         // ─── State ─────────────────────────────────────────────────────
         let pairingKey = '';
+        let isServerLicensed = false;
         let urlQueue   = [];      // [{id, url}]
         let gallery    = [];      // [{name, blobUrl, originalUrl}]
         let downloading = false;
 
+        function updateLicenseGate(licensed) {
+            isServerLicensed = Boolean(licensed);
+            const gateCard = document.getElementById('activationGateCard');
+            if (gateCard) gateCard.classList.toggle('hidden', isServerLicensed);
+            renderQueue();
+        }
+
+        async function activateLicenseFromImages(event) {
+            event.preventDefault();
+            const keyInput = document.getElementById('activationLicenseKey');
+            const btn = document.getElementById('btnActivateLicense');
+            const err = document.getElementById('activationError');
+            const licenseKey = (keyInput.value || '').trim();
+            if (!licenseKey) return;
+
+            err.style.display = 'none';
+            btn.disabled = true;
+            btn.textContent = 'Activating...';
+            try {
+                const res = await fetch('/api/setup/license', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ licenseKey })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    const msg = (data.error && (data.error.reason || data.error.title)) || data.message || 'Activation failed';
+                    throw new Error(msg);
+                }
+                updateLicenseGate(true);
+                showToast('License Activated', 'Image downloads are now unlocked.', 'success');
+            } catch (e) {
+                err.textContent = e.message;
+                err.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Activate license';
+            }
+        }
+
         // ─── Init ──────────────────────────────────────────────────────
         (async function init() {
             try {
-                const r = await fetch('/api/pairing');
-                const d = await r.json();
-                pairingKey = d.pairingKey || '';
+                const [pairResp, stateResp] = await Promise.all([
+                    fetch('/api/pairing'),
+                    fetch('/api/server/state')
+                ]);
+                if (pairResp.ok) {
+                    const d = await pairResp.json();
+                    pairingKey = d.pairingKey || '';
+                }
+                if (stateResp.ok) {
+                    const s = await stateResp.json();
+                    updateLicenseGate(Boolean(s.isLicensed));
+                }
             } catch(_) {}
         })();
 
@@ -371,7 +437,7 @@
             }
 
             container.style.display = '';
-            btnDl.disabled = downloading;
+            btnDl.disabled = downloading || !isServerLicensed;
             btnCl.disabled = downloading;
 
             tags.replaceChildren();
@@ -398,6 +464,12 @@
 
         // ─── Download pipeline ─────────────────────────────────────────
         async function downloadAll() {
+            if (!isServerLicensed) {
+                showToast('Activation Required', 'Please activate a valid license key before downloading images.', 'error');
+                const keyInput = document.getElementById('activationLicenseKey');
+                if (keyInput) keyInput.focus();
+                return;
+            }
             if ('Notification' in window && Notification.permission === 'default') {
                 Notification.requestPermission().catch(() => {});
             }
