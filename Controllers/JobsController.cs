@@ -239,21 +239,7 @@ public class JobsController : ControllerBase
             request.MaxSpeedBytes,
             !string.IsNullOrWhiteSpace(request.Proxy));
 
-        return Ok(new JobStatusResponse
-        {
-            JobId = job.JobId,
-            State = job.State.ToString(),
-            ProgressPercentage = "0%",
-            Speed = "",
-            Eta = "",
-            Message = job.Message,
-            CompletedItems = job.CompletedItems.Values.OrderBy(item => item.Index).ToList(),
-            ManifestVersion = job.ManifestVersion,
-            EventSequence = job.EventSequence,
-            CompletedCount = job.CompletedItems.Values.Count(item => item.State == TransferState.Completed),
-            TotalCount = job.CompletedItems.Count,
-            ThumbnailUrl = string.Empty
-        });
+        return Ok(BuildJobStatusResponse(job));
     }
 
     [HttpPost("{id}/cancel")]
@@ -277,23 +263,25 @@ public class JobsController : ControllerBase
         if (job == null)
             return NotFound();
 
-        return Ok(new JobStatusResponse
-        {
-            JobId = job.JobId,
-            State = job.State.ToString(),
-            ProgressPercentage = job.ProgressPercentage,
-            Speed = job.Speed,
-            Eta = job.Eta,
-            Message = job.Message,
-            OutputFileName = job.OutputFileName,
-            CompletedItems = job.CompletedItems.Values.OrderBy(item => item.Index).ToList(),
-            ManifestVersion = job.ManifestVersion,
-            EventSequence = job.EventSequence,
-            CompletedCount = job.CompletedItems.Values.Count(item => item.State == TransferState.Completed),
-            TotalCount = job.CompletedItems.Count,
-            ThumbnailUrl = job.ThumbnailUrl
-        });
+        return Ok(BuildJobStatusResponse(job));
     }
+
+    private static JobStatusResponse BuildJobStatusResponse(DownloadJob job) => new()
+    {
+        JobId = job.JobId,
+        State = job.State.ToString(),
+        ProgressPercentage = job.ProgressPercentage,
+        Speed = job.Speed,
+        Eta = job.Eta,
+        Message = job.Message,
+        OutputFileName = job.OutputFileName,
+        CompletedItems = job.CompletedItems.Values.OrderBy(item => item.Index).ToList(),
+        ManifestVersion = job.ManifestVersion,
+        EventSequence = job.EventSequence,
+        CompletedCount = job.CompletedItems.Values.Count(item => item.State == TransferState.Completed),
+        TotalCount = job.CompletedItems.Count,
+        ThumbnailUrl = job.ThumbnailUrl
+    };
 
     [HttpGet("{id}/manifest")]
     public ActionResult<StreamingManifest> GetStreamingManifest(string id)
@@ -417,21 +405,7 @@ public class JobsController : ControllerBase
                     fileToServe = historyJob.OutputPath;
                 }
 
-                mimeType = Path.GetExtension(fileToServe).ToLower() switch
-                {
-                    ".mp4" => "video/mp4",
-                    ".webm" => "video/webm",
-                    ".mkv" => "video/x-matroska",
-                    ".mp3" => "audio/mpeg",
-                    ".m4a" => "audio/mp4",
-                    ".wav" => "audio/wav",
-                    ".jpg" or ".jpeg" => "image/jpeg",
-                    ".png" => "image/png",
-                    ".webp" => "image/webp",
-                    ".gif" => "image/gif",
-                    ".zip" => "application/zip",
-                    _ => "application/octet-stream"
-                };
+                mimeType = MimeTypeHelper.FromFilePath(fileToServe);
                 downloadFileName = Path.GetFileName(fileToServe);
 
                 if (!System.IO.File.Exists(fileToServe))
@@ -480,12 +454,7 @@ public class JobsController : ControllerBase
             });
         }
 
-        if (!session.TryReserve(item))
-            return Conflict(new { message = "Playlist item already downloaded or in progress." });
-
-        _jobs.TrySetPlaylistItemState(job, item.Index, TransferState.Transferring);
-
-        return await ServePlaylistItemAsync(job, item, session);
+        return await ReserveAndServePlaylistItemAsync(job, item, session);
     }
 
     [HttpGet("{id}/download/next")]
@@ -511,11 +480,18 @@ public class JobsController : ControllerBase
             });
         }
 
+        return await ReserveAndServePlaylistItemAsync(job, item, session);
+    }
+
+    private async Task<IActionResult> ReserveAndServePlaylistItemAsync(
+        DownloadJob job,
+        PlaylistItemResult item,
+        DownloadSession session)
+    {
         if (!session.TryReserve(item))
             return Conflict(new { message = "Playlist item already downloaded or in progress." });
 
         _jobs.TrySetPlaylistItemState(job, item.Index, TransferState.Transferring);
-
         return await ServePlaylistItemAsync(job, item, session);
     }
 

@@ -17,6 +17,7 @@ using NebulaServer.Services.MediaExtraction.Sources;
 using NebulaServer.Services.MediaExtraction.Extractors;
 using NebulaServer.Services.ImageEngine;
 using NebulaServer.Services.ImageEngine.Extractors;
+using NebulaServer.Services.Preview;
 
 namespace NebulaServer.Extensions
 {
@@ -25,7 +26,7 @@ namespace NebulaServer.Extensions
         public static IServiceCollection AddNebulaServices(this IServiceCollection services)
         {
             services.AddControllers();
-            services.AddSignalR();
+
             services.AddHttpClient();
 
             // Image Engine HttpClients
@@ -72,6 +73,8 @@ namespace NebulaServer.Extensions
             services.AddSingleton<MediaExtractionEngine>();
 
             // Core Services
+            services.AddSingleton<MediaPreviewService>();
+            services.AddSingleton<SocialMediaMetadataExtractor>();
             services.AddSingleton<StorageService>();
             services.AddSingleton<SystemInfoService>();
             services.AddSingleton<PythonProcessService>();
