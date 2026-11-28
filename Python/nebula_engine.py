@@ -485,10 +485,15 @@ def _build_cookie_variants(base_opts: dict, job_id: str) -> list[tuple[str, dict
 
     cookies = _cookies_file_path()
     if cookies:
-        with_file = copy.deepcopy(base_opts)
-        with_file["cookiefile"] = str(cookies)
-        variants.append(("cookies file", with_file))
-        log(f"Using cookies file: {cookies}", job_id)
+        # Work on a clean private copy: yt-dlp rewrites its cookie file on
+        # exit, and malformed or expired entries make it reject the file.
+        from nebula.cookie_utils import prepare_cookie_file
+        clean, note = prepare_cookie_file(cookies, TEMP_DIR)
+        log(note, job_id)
+        if clean:
+            with_file = copy.deepcopy(base_opts)
+            with_file["cookiefile"] = str(clean)
+            variants.append(("cookies file", with_file))
 
     browsers = _browser_cookies_source()
     for b in browsers:
